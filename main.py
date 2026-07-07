@@ -77,9 +77,6 @@ def main() -> None:
         max_facts_per_user=20,
     )
 
-    # 评估器（离线降级，不使用 LLM）
-    evaluator = Evaluator(db_path=data_dir / "eval" / "evaluations.db")
-
     # 尝试接入真实 LLM，失败则降级为 Mock
     mock_responses = {
         "RAG 是什么": "RAG 是检索增强生成，它通过检索外部文档片段并将其作为上下文输入语言模型来生成回答。",
@@ -93,6 +90,9 @@ def main() -> None:
     except Exception:
         llm = MockLLMClient(responses=mock_responses)
         print("⚠️  降级为 Mock 模式（LLM 不可用）")
+
+    # 评估器（使用真实 LLM 打分，失败自动降级为离线 fallback）
+    evaluator = Evaluator.with_llm(llm=llm, db_path=data_dir / "eval" / "evaluations.db")
 
     agent = Agent(
         AgentConfig(
