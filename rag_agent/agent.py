@@ -55,8 +55,8 @@ class Agent:
             facts = self.config.long_term_memory.recall(user_id, question, top_k=3)
             long_term_facts = [f.content for f in facts]
 
-        # 2. Knowledge base retrieval
-        kb_results = self.config.knowledge_base.search(question, top_k=5)
+        # 2. 混合检索：Dense + BM25 + RRF 融合
+        kb_results = self.config.knowledge_base.hybrid_search(question, top_k=5)
         contexts = [r.text for r in kb_results]
 
         # 3. Build prompt
