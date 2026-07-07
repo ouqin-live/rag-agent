@@ -9,7 +9,7 @@ from pathlib import Path
 from rag_agent.agent import Agent, AgentConfig, ChatResponse
 from rag_agent.embedder import get_embedder
 from rag_agent.evaluation import Evaluator
-from rag_agent.knowledge import FixedSizeChunker, KnowledgeBase
+from rag_agent.knowledge import FixedSizeChunker, KnowledgeBase, SemanticChunker
 from rag_agent.knowledge.reranker import EmbeddingReranker
 from rag_agent.llm import MockLLMClient, OpenAICompatibleClient
 from rag_agent.memory import LongTermMemory, ShortTermMemory
@@ -52,10 +52,10 @@ def main() -> None:
 
     embedder = get_embedder()
 
-    # 知识库（Chroma：HNSW 索引 + 自动持久化）
+    # 知识库（Chroma：HNSW 索引 + 自动持久化 + 语义分块）
     kb = KnowledgeBase.from_chroma_store(
         store_path=data_dir / "kb",
-        chunker=FixedSizeChunker(chunk_size=120, overlap=20),
+        chunker=SemanticChunker(embedder=embedder, similarity_threshold=0.3),
         embedder=embedder,
     )
     kb.add_document(str(md_path), metadata={"tag": "rag"})
