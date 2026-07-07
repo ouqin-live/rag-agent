@@ -99,60 +99,13 @@ User Query
 
 ## 4. 可优化方向
 
-### 4.1 引入中期记忆（会话摘要）
+### 4.1 引入中期记忆（会话摘要）✅ 已实现
 
-新增 `MediumTermMemory` 模块：
+`MediumTermMemory`：当短期记忆超过阈值时，LLM 自动将旧轮次压缩为会话摘要，注入 prompt 的 `[本次会话摘要]` 部分。
 
-```python
-class MediumTermMemory:
-    def __init__(self, llm_client: BaseLLMClient):
-        self.llm_client = llm_client
-        self.summary = ""
+### 4.2 LLM-based 事实提取 ✅ 已实现
 
-    def update(self, messages: list[Message]):
-        """把旧对话合并进现有摘要"""
-        prompt = f"""
-当前会话摘要：{self.summary}
-新增对话：{messages}
-请更新摘要，保留关键信息，控制长度。
-"""
-        self.summary = self.llm_client.generate(prompt)
-```
-
-在 `Agent.chat()` 中，当短期记忆超过阈值时，把旧轮次归档到中期记忆：
-
-```python
-if len(self.config.short_term_memory) > threshold:
-    old_turns = self.config.short_term_memory.archive_old_turns()
-    self.config.medium_term_memory.update(old_turns)
-```
-
-Prompt 构建顺序：
-
-```
-[系统提示]
-[长期记忆：用户事实]
-[中期记忆：本次会话摘要]
-[短期记忆：最近 N 轮完整对话]
-[当前问题]
-```
-
-### 4.2 LLM-based 事实提取
-
-用 LLM 替代规则提取器，提升复杂语义理解能力：
-
-```python
-prompt = """
-请从以下对话中提取用户的关键事实和偏好。
-只返回 JSON 数组，每条事实一行：
-["事实1", "事实2"]
-
-User: {question}
-Assistant: {answer}
-"""
-```
-
-离线时降级回 `RuleBasedMemoryExtractor`。
+`LLMMemoryExtractor` 用 LLM 从对话中提取 JSON 格式的用户事实。离线时自动降级回 `RuleBasedMemoryExtractor`。提取质量显著优于纯规则匹配。
 
 ### 4.3 短期记忆智能淘汰
 
@@ -179,13 +132,27 @@ Assistant: {answer}
 
 当新事实与旧事实矛盾时（如用户先说喜欢中文，后说喜欢英文），自动检测并标记冲突，或选择最新的事实。
 
+### 4.7 跨会话摘要复用
+
+当前中期记忆（会话摘要）只存在于内存，会话结束后丢失。可以将其写入长期记忆向量库，下次用户回来时召回"我们上次聊到哪了"。
+
+### 4.8 记忆时间衰减
+
+长期记忆引入时间衰减因子：越久远未被提及的事实，召回时权重越低。避免过时偏好影响当前回答。
+
+### 4.9 知识图谱
+
+将用户事实组织为图结构（如"用户 → 是 → 后端工程师"、"用户 → 偏好 → 简洁解释"），支持多跳推理和关系查询。
+
 ## 5. 优先级建议
 
-| 优化方向 | 优先级 | 说明 |
-|---|---|---|
- 引入中期记忆 | P1 | 对长会话体验提升最明显 |
-| LLM-based 事实提取 | P1 | 显著提升记忆质量 |
-| 短期记忆按 token 截断 | P2 | 更精细的成本控制 |
-| 记忆重要性评分 | P2 | 提升召回质量 |
-| 多会话长期记忆 | P3 | 更复杂的用户管理场景 |
-| 记忆冲突检测 | P3 | 高级功能，初期可不做 |
+| 优化方向 | 优先级 | 状态 | 说明 |
+|---|---|---|---|
+| 引入中期记忆 | P1 | ✅ 已完成 | MediumTermMemory，会话摘要 |
+| LLM-based 事实提取 | P1 | ✅ 已完成 | LLMMemoryExtractor，含规则降级 |
+| 短期记忆按 token 截断 | P2 | 待实现 | 更精细的成本控制 |
+| 记忆重要性评分 | P2 | 待实现 | 提升召回质量 |
+| 记忆冲突检测 | P3 | 待实现 | 高级功能，初期可不做 |
+| 跨会话摘要复用 | P3 | 待实现 | 会话摘要持久化 |
+| 记忆时间衰减 | P3 | 待实现 | 旧事实权重降低 |
+| 知识图谱 | P3 | 待实现 | 多跳推理与关系查询 |
