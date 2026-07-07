@@ -60,6 +60,12 @@ def main() -> None:
     kb.add_document(str(md_path), metadata={"tag": "rag"})
     print(f"知识库已加载: {len(kb)} chunks")
 
+    # 混合检索快速验证
+    hybrid_results = kb.hybrid_search("RAG 减少幻觉", top_k=2)
+    print(f"混合检索（BM25 + Dense）Top-2:")
+    for i, r in enumerate(hybrid_results, 1):
+        print(f"  {i}. [{r.score:.4f}] {r.text[:60]}...")
+
     # 长期记忆（Chroma：HNSW 索引 + 自动持久化）
     ltm = LongTermMemory.from_chroma_store(
         store_path=data_dir / "memory",

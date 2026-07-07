@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+from rank_bm25 import BM25Okapi
 
 from rag_agent.embedder import BaseEmbedder, get_embedder
 from rag_agent.knowledge.base import BaseChunker, BaseLoader, Chunk, RetrievalResult, VectorStore
@@ -32,6 +34,10 @@ class KnowledgeBase:
         self.chunker = chunker or FixedSizeChunker()
         self.embedder = embedder or get_embedder()
         self.loader = loader or AutoLoader()
+
+        # BM25 关键词检索索引（内部分词后重建）
+        self._bm25_index: BM25Okapi | None = None
+        self._bm25_chunks: list[Chunk] = []
 
     @classmethod
     def from_local_store(
@@ -116,7 +122,8 @@ class KnowledgeBase:
             source,
             len(docs),
         )
-        # 6. 返回新增 chunk 的 id 列表，方便调用方追踪
+        # 6. 重建 BM25 关键词索引
+        self._rebuild_bm25()
         return [chunk.id for chunk in all_chunks]
 
     def remove_document(self, doc_id: str) -> None:
@@ -131,9 +138,69 @@ class KnowledgeBase:
         top_k: int = 5,
         filters: dict[str, Any] | None = None,
     ) -> list[RetrievalResult]:
-        """Embed the query and search the vector store."""
+        """语义检索（纯 Dense 向量检索）。"""
         query_embedding = self.embedder.encode([query], normalize_embeddings=True)[0]
         return self.store.search(query_embedding, top_k=top_k, filters=filters)
+
+    def hybrid_search(
+        self,
+        query: str,
+        top_k: int = 5,
+        filters: dict[str, Any] | None = None,
+        rrf_k: int = 60,
+    ) -> list[RetrievalResult]:
+        """混合检索：Dense（向量）+ BM25（关键词）+ RRF 融合。
+
+        RRF (Reciprocal Rank Fusion) 将两种排序融合为最终结果。
+        """
+        # Dense 检索
+        dense_results = self.search(query, top_k=top_k * 2, filters=filters)
+
+        # BM25 检索
+        if self._bm25_index is None:
+            self._rebuild_bm25()
+
+        bm25_results: list[RetrievalResult] = []
+        if self._bm25_index is not None and self._bm25_chunks:
+            tokenized = _tokenize_bm25(query)
+            bm25_scores = self._bm25_index.get_scores(tokenized)
+            # 归一化 BM25 分数到 0~1
+            max_score = float(bm25_scores.max()) if bm25_scores.max() > 0 else 1.0
+            top_indices = np.argsort(bm25_scores)[-top_k * 2 :][::-1]
+            for idx in top_indices:
+                if bm25_scores[idx] > 0:
+                    bm25_results.append(
+                        RetrievalResult(
+                            chunk=self._bm25_chunks[idx],
+                            score=float(bm25_scores[idx]) / max_score,
+                        )
+                    )
+
+        if not dense_results and not bm25_results:
+            return []
+
+        # RRF 融合
+        return _rrf_fusion(dense_results, bm25_results, top_k=top_k, k=rrf_k)
+
+    def _rebuild_bm25(self) -> None:
+        """从向量库重建 BM25 关键词索引。"""
+        try:
+            # 用空向量做一次全量查询来获取所有 chunks
+            dim = self.embedder.dim
+            all_results = self.store.search(
+                np.zeros(dim, dtype=np.float32), top_k=len(self.store)
+            )
+            self._bm25_chunks = [r.chunk for r in all_results if r.chunk.text.strip()]
+        except Exception:
+            self._bm25_chunks = []
+
+        if not self._bm25_chunks:
+            self._bm25_index = None
+            return
+
+        tokenized_corpus = [_tokenize_bm25(c.text) for c in self._bm25_chunks]
+        self._bm25_index = BM25Okapi(tokenized_corpus)
+        logger.info("BM25 index rebuilt: %d chunks", len(self._bm25_chunks))
 
     def _resolve_loader(self, loader: str | BaseLoader | None) -> BaseLoader:
         if loader is None or loader == "auto":
@@ -144,3 +211,49 @@ class KnowledgeBase:
 
     def __len__(self) -> int:
         return len(self.store)
+
+
+# ------------------------------------------------------------------
+# 内部辅助：分词 & RRF 融合
+# ------------------------------------------------------------------
+def _tokenize_bm25(text: str) -> list[str]:
+    """中英文混合分词：中文按 bigram 切，英文按空格切。"""
+    # 中文部分：取中文字符，生成 bigram
+    chinese_chars = re.findall(r"[\u4e00-\u9fff]+", text)
+    tokens: list[str] = []
+    for seg in chinese_chars:
+        tokens.append(seg)  # 完整词
+        for i in range(len(seg) - 1):
+            tokens.append(seg[i : i + 2])  # bigram
+    # 英文/数字部分
+    english_part = re.sub(r"[\u4e00-\u9fff]+", " ", text)
+    tokens.extend(re.findall(r"[a-zA-Z0-9]+", english_part.lower()))
+    return [t for t in tokens if len(t) > 0]
+
+
+def _rrf_fusion(
+    dense: list[RetrievalResult],
+    bm25: list[RetrievalResult],
+    top_k: int = 5,
+    k: int = 60,
+) -> list[RetrievalResult]:
+    """Reciprocal Rank Fusion：融合 Dense 和 BM25 检索结果。"""
+    scores: dict[str, float] = {}
+    chunk_map: dict[str, RetrievalResult] = {}
+
+    for rank, result in enumerate(dense, 1):
+        cid = result.chunk.id
+        scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank)
+        chunk_map[cid] = result
+
+    for rank, result in enumerate(bm25, 1):
+        cid = result.chunk.id
+        scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank)
+        if cid not in chunk_map:
+            chunk_map[cid] = result
+
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    return [
+        RetrievalResult(chunk=chunk_map[cid], score=score)
+        for cid, score in ranked[:top_k]
+    ]
