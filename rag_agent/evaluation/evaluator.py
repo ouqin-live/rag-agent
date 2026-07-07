@@ -38,6 +38,15 @@ class Evaluator:
         self.rules = rules or DefaultRuleChecker()
         self.db_path = Path(db_path) if db_path else Path("data/eval/evaluations.db")
         self.failure_threshold = failure_threshold
+
+        # 规则严重程度权重：值越大扣分越多
+        self._rule_severity: dict[str, float] = {
+            "not_empty": 0.5,
+            "length_ok": 0.05,
+            "no_refusal": 0.3,
+            "no_sensitive": 0.5,
+            "no_obvious_hallucination": 0.3,
+        }
         self._init_db()
 
     @classmethod
@@ -103,7 +112,7 @@ class Evaluator:
             f"{r.name}: {r.message}" for r in rule_results if not r.passed and r.message
         ]
 
-        overall = self._compute_overall(scores, failed)
+        overall = self._compute_overall(scores, rule_results)
         result = EvaluationResult(
             question=question,
             answer=answer,
@@ -117,15 +126,21 @@ class Evaluator:
         return result
 
     def _compute_overall(
-        self, scores: dict[str, float], failed_rules: list[str]
+        self,
+        scores: dict[str, float],
+        rule_results: list,  # list[RuleResult]
     ) -> float:
+        """计算综合分：指标平均分 - 按严重程度加权的规则扣分。"""
         if not scores:
             return 0.0
         avg_score = sum(scores.values()) / len(scores)
-        # Penalize heavily if any rule failed
-        if failed_rules:
-            return max(0.0, avg_score - 0.3)
-        return avg_score
+        # 按严重程度累加扣分
+        penalty = sum(
+            self._rule_severity.get(r.name, 0.0)
+            for r in rule_results
+            if not r.passed
+        )
+        return max(0.0, avg_score - penalty)
 
     def _persist(self, result: EvaluationResult) -> None:
         with sqlite3.connect(self.db_path) as conn:
