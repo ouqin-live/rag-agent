@@ -1,0 +1,15 @@
+[project]
+name = "rag-agent"
+version = "0.2.0"
+description = "RAG Agent with memory, knowledge base, and auto-evaluation"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "openai>=2.44.0",
+    "sentence-transformers>=5.6.0",
+    "numpy>=1.26.0",
+    "requests>=2.32.0",
+    "pymupdf>=1.24.0",
+    "chromadb>=0.5.0",
+    "python-dotenv>=1.0.0",
+]
