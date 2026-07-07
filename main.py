@@ -12,7 +12,7 @@ from rag_agent.evaluation import Evaluator
 from rag_agent.knowledge import FixedSizeChunker, KnowledgeBase, SemanticChunker
 from rag_agent.knowledge.reranker import EmbeddingReranker
 from rag_agent.llm import MockLLMClient, OpenAICompatibleClient
-from rag_agent.memory import LongTermMemory, ShortTermMemory
+from rag_agent.memory import LongTermMemory, MediumTermMemory, ShortTermMemory
 
 
 def setup_test_docs(tmpdir: Path) -> Path:
@@ -98,6 +98,7 @@ def main() -> None:
         AgentConfig(
             knowledge_base=kb,
             short_term_memory=ShortTermMemory(max_turns=4),
+            medium_term_memory=MediumTermMemory(llm_client=llm),
             long_term_memory=ltm,
             evaluator=evaluator,
             llm_client=llm,

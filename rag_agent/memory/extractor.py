@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import re
 from abc import ABC, abstractmethod
 from typing import Iterable
+
+from rag_agent.llm import BaseLLMClient
 
 
 class MemoryExtractor(ABC):
@@ -74,3 +77,42 @@ class RuleBasedMemoryExtractor(MemoryExtractor):
                 seen.add(key)
                 result.append(fact)
         return result
+
+
+class LLMMemoryExtractor(MemoryExtractor):
+    """Use LLM to extract user facts, falling back to rule-based on failure."""
+
+    def __init__(self, llm_client: BaseLLMClient):
+        self.llm_client = llm_client
+        self._fallback = RuleBasedMemoryExtractor()
+
+    def extract(self, user_message: str, assistant_message: str) -> list[str]:
+        prompt = f"""从以下对话中提取用户的关键事实和偏好（如语言偏好、职业、技术栈等）。
+每条事实用一句简短的话表达。只返回 JSON 数组，不要返回其他内容。
+若无事实返回空数组：[]
+
+User: {user_message}
+Assistant: {assistant_message}
+
+JSON: """
+        try:
+            response = self.llm_client.generate(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=200,
+            )
+            facts = json.loads(self._extract_json(response))
+            if isinstance(facts, list) and all(isinstance(f, str) for f in facts):
+                return [f.strip() for f in facts if f.strip()]
+        except Exception:
+            pass
+        return self._fallback.extract(user_message, assistant_message)
+
+    @staticmethod
+    def _extract_json(text: str) -> str:
+        text = text.strip()
+        if text.startswith("```"):
+            text = text.strip("`")
+            if text.startswith("json"):
+                text = text[4:].strip()
+        return text

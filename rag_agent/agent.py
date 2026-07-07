@@ -10,7 +10,13 @@ from rag_agent.evaluation import Evaluator
 from rag_agent.evaluation.base import EvaluationResult
 from rag_agent.knowledge import KnowledgeBase, RetrievalResult
 from rag_agent.llm import BaseLLMClient, MockLLMClient
-from rag_agent.memory import LongTermMemory, RuleBasedMemoryExtractor, ShortTermMemory
+from rag_agent.memory import (
+    LLMMemoryExtractor,
+    LongTermMemory,
+    MediumTermMemory,
+    RuleBasedMemoryExtractor,
+    ShortTermMemory,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +37,7 @@ class AgentConfig:
 
     knowledge_base: KnowledgeBase
     short_term_memory: ShortTermMemory
+    medium_term_memory: MediumTermMemory | None = None
     long_term_memory: LongTermMemory | None = None
     evaluator: Evaluator | None = None
     llm_client: BaseLLMClient | None = None
@@ -43,9 +50,10 @@ class Agent:
 
     def __init__(self, config: AgentConfig):
         self.config = config
-        self.extractor = RuleBasedMemoryExtractor()
         if self.config.llm_client is None:
             self.config.llm_client = MockLLMClient()
+        # 有 LLM 时优先用 LLM 提取事实，失败自动降级到规则提取
+        self.extractor = LLMMemoryExtractor(self.config.llm_client)
 
     def chat(self, user_id: str, question: str) -> ChatResponse:
         """Run a full question-answering turn."""
@@ -76,9 +84,10 @@ class Agent:
             else:
                 raise
 
-        # 5. Update short-term memory
+        # 5. Update short-term memory（归档旧轮次到中期记忆）
         self.config.short_term_memory.add("user", question)
         self.config.short_term_memory.add("assistant", answer)
+        self._archive_to_medium_term()
 
         # 6. Extract and store long-term facts
         if self.config.long_term_memory is not None:
@@ -137,6 +146,12 @@ class Agent:
         if contexts:
             system_parts.append("\n[参考资料]\n" + "\n".join(f"- {c}" for c in contexts))
 
+        # 注入中期记忆（本次会话摘要）
+        if self.config.medium_term_memory:
+            summary = self.config.medium_term_memory.get_summary()
+            if summary:
+                system_parts.append(f"\n[本次会话摘要]\n{summary}")
+
         messages: list[dict[str, str]] = [
             {"role": "system", "content": "\n".join(system_parts)},
         ]
@@ -151,6 +166,35 @@ class Agent:
 
         messages.append({"role": "user", "content": question})
         return messages
+
+    def _archive_to_medium_term(self) -> None:
+        """当短期记忆超过限制时，将旧轮次归档到中期记忆。"""
+        if self.config.medium_term_memory is None:
+            return
+        # ShortTermMemory._enforce_limit 已自动裁剪，这里只取最旧的一轮做归档
+        messages = self.config.short_term_memory.get_messages()
+        # 如果消息数超过 2*max_turns，说明有旧消息被裁剪了
+        # 简化处理：每轮后检查，把超出部分的第一轮归档
+        cut_messages = self._extract_overflow_messages()
+        if cut_messages:
+            self.config.medium_term_memory.update(cut_messages)
+
+    def _extract_overflow_messages(self) -> list:
+        """Return messages that would be removed from short-term memory."""
+        from rag_agent.memory.short_term import Message
+
+        messages = self.config.short_term_memory.get_messages()
+        max_msgs = self.config.short_term_memory.max_turns * 2
+        if len(messages) > max_msgs:
+            overflow = len(messages) - max_msgs
+            # 取最旧的完整轮次（user + assistant 成对）
+            to_archive = messages[:overflow]
+            # 如果最后一条是 user，也加上（保证成对）
+            result: list = []
+            for msg in to_archive:
+                result.append(msg)
+            return result
+        return []
 
     def _fallback_generate(self, question: str, contexts: list[str]) -> str:
         """Template-based fallback when the LLM is unavailable."""
