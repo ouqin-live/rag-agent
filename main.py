@@ -10,6 +10,7 @@ from rag_agent.agent import Agent, AgentConfig, ChatResponse
 from rag_agent.embedder import get_embedder
 from rag_agent.evaluation import Evaluator
 from rag_agent.knowledge import FixedSizeChunker, KnowledgeBase
+from rag_agent.knowledge.reranker import CrossEncoderReranker
 from rag_agent.llm import MockLLMClient, OpenAICompatibleClient
 from rag_agent.memory import LongTermMemory, ShortTermMemory
 
@@ -59,6 +60,9 @@ def main() -> None:
     )
     kb.add_document(str(md_path), metadata={"tag": "rag"})
     print(f"知识库已加载: {len(kb)} chunks")
+
+    # 启用 Cross-Encoder 重排序
+    kb.reranker = CrossEncoderReranker()
 
     # 混合检索快速验证
     hybrid_results = kb.hybrid_search("RAG 减少幻觉", top_k=2)

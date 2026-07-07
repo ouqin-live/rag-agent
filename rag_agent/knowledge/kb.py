@@ -15,6 +15,7 @@ from rag_agent.knowledge.base import BaseChunker, BaseLoader, Chunk, RetrievalRe
 from rag_agent.knowledge.chunker import FixedSizeChunker
 from rag_agent.knowledge.chroma_store import ChromaVectorStore
 from rag_agent.knowledge.loader import AutoLoader
+from rag_agent.knowledge.reranker import BaseReranker, CrossEncoderReranker
 from rag_agent.knowledge.store import LocalVectorStore
 
 logger = logging.getLogger(__name__)
@@ -29,11 +30,14 @@ class KnowledgeBase:
         chunker: BaseChunker | None = None,
         embedder: BaseEmbedder | None = None,
         loader: BaseLoader | None = None,
+        reranker: BaseReranker | None = None,
     ):
         self.store = store
         self.chunker = chunker or FixedSizeChunker()
         self.embedder = embedder or get_embedder()
         self.loader = loader or AutoLoader()
+        # Reranker：Cross-Encoder 精排，默认不启用
+        self.reranker = reranker
 
         # BM25 关键词检索索引（内部分词后重建）
         self._bm25_index: BM25Okapi | None = None
@@ -179,8 +183,14 @@ class KnowledgeBase:
         if not dense_results and not bm25_results:
             return []
 
-        # RRF 融合
-        return _rrf_fusion(dense_results, bm25_results, top_k=top_k, k=rrf_k)
+        # RRF 融合（粗排）
+        fused = _rrf_fusion(dense_results, bm25_results, top_k=top_k * 2, k=rrf_k)
+
+        # Cross-Encoder 精排（可选）
+        if self.reranker is not None:
+            fused = self.reranker.rerank(query, fused, top_k=top_k)
+
+        return fused[:top_k]
 
     def _rebuild_bm25(self) -> None:
         """从向量库重建 BM25 关键词索引。"""
