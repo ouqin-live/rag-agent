@@ -2,15 +2,9 @@
 
 from __future__ import annotations
 
-import logging
 import shutil
 import tempfile
 from pathlib import Path
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
 
 from rag_agent.agent import Agent, AgentConfig, ChatResponse
 from rag_agent.embedder import get_embedder
@@ -18,7 +12,11 @@ from rag_agent.evaluation import Evaluator
 from rag_agent.knowledge import FixedSizeChunker, KnowledgeBase, SemanticChunker
 from rag_agent.knowledge.reranker import EmbeddingReranker
 from rag_agent.llm import MockLLMClient, OpenAICompatibleClient
+from rag_agent.logging_config import configure_logging
 from rag_agent.memory import LongTermMemory, MediumTermMemory, ShortTermMemory
+
+
+configure_logging()
 
 
 def setup_test_docs(tmpdir: Path) -> Path:

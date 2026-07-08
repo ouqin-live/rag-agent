@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from rag_agent.agent import Agent, AgentConfig, ChatResponse
 from rag_agent.config import Settings, get_settings
+from rag_agent.logging_config import configure_logging
 from rag_agent.embedder import get_embedder
 from rag_agent.evaluation import Evaluator
 from rag_agent.knowledge import KnowledgeBase
@@ -81,10 +82,7 @@ async def lifespan(app: FastAPI):
 
 
 def _setup_logging(settings: Settings) -> None:
-    logging.basicConfig(
-        level=getattr(logging, settings.log_level.upper(), logging.INFO),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
+    configure_logging(level=settings.log_level)
 
 
 def _build_agent(settings: Settings) -> Agent:
