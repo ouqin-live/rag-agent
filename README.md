@@ -104,6 +104,8 @@ EVAL_FAILURE_THRESHOLD=0.6
 | 知识库 | `rag_agent/knowledge/` | 多格式文档加载（txt/md/pdf/url）、分块、Chroma 向量存储与语义检索 |
 | 记忆 | `rag_agent/memory/` | 短期会话记忆 + 长期用户事实（向量库存储，支持去重与容量限制） |
 | 评估 | `rag_agent/evaluation/` | RAGAS 风格指标（Faithfulness / Relevance / Precision）+ 规则检查 |
+| 检索增强 | `rag_agent/retrieval/` | Query 改写（指代消解 + 口语化），支持自定义 Transformer |
+| 缓存 | `rag_agent/cache/` | Semantic Cache，按 query 意图相似度复用答案，跳过 LLM |
 | Agent | `rag_agent/agent.py` | 编排记忆 → 知识库 → LLM → 评估的全链路，支持同步/异步/流式 |
 | LLM | `rag_agent/llm.py` | OpenAI 兼容客户端，支持 .env 配置、Mock 降级、异步与流式 |
 | API | `rag_agent/api.py` | FastAPI 服务入口 |
@@ -116,6 +118,8 @@ EVAL_FAILURE_THRESHOLD=0.6
 - [知识库模块](docs/Knowledge_Base.md)
 - [记忆模块](docs/Memory_Module.md)
 - [评估模块](docs/Evaluation_Module.md)
+- [检索增强模块](docs/Retrieval_Module.md)
+- [缓存模块](docs/Cache_Module.md)
 - [优化路线图](docs/Optimization_Roadmap.md)
 
 ## 技术栈
