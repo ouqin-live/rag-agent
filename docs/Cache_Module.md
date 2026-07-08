@@ -132,9 +132,9 @@ User: RAG 究竟是什么？
 
 ### 6.2 单一缓存策略
 
-只有语义缓存，缺少：
+当前只有语义缓存（query → 回答），缺少：
 
-- **Embedding 缓存**：相同文本重复编码浪费计算
+- **Embedding 缓存**：缓存 `embedder.encode(text)` 的结果。同一个 chunk 或 query 反复出现时避免重复计算向量。虽然 SemanticCache 复用了回答，但每次 lookup 仍然要 `encode(query)`，不会省这一步
 - **检索结果缓存**：热门 query 每次都重新检索
 - **LLM 响应缓存**：相同 prompt 重新调用
 
@@ -152,7 +152,11 @@ User: RAG 究竟是什么？
 
 ## 7. 可优化方向
 
-### 7.1 Embedding 缓存
+### 7.1 Embedding 缓存（文本 → 向量）
+
+缓存 `embedder.encode(text)` 的结果。与 SemanticCache 不同：
+- SemanticCache 缓存的是 **query → 完整回答**，命中时跳过 LLM + 检索
+- Embedding 缓存缓存的是 **文本 → 向量**，命中时跳过 `encode()` 计算
 
 用 LRU 缓存 key 为 `sha256(text)`，缓存编码后的向量：
 
@@ -164,7 +168,9 @@ class EmbeddingCache:
     def get(self, text): ...
 ```
 
-收益：避免相同 chunk 重复编码，尤其在文档入库时。
+收益：
+- 文档入库时相同 chunk 不重复编码
+- SemanticCache lookup 时相同 query 不重复计算 embedding
 
 ### 7.2 检索结果缓存
 
