@@ -117,13 +117,19 @@
 - **接入点**：`Agent.chat()` 调用 `KnowledgeBase.hybrid_search()` 之前
 - **产出**：新增 `rag_agent/retrieval/query_transform.py`
 
-#### P1-2 引入多级缓存
+#### P1-2 引入多级缓存（含 Semantic Cache）
 
-- **目标**：降低重复 embedding 和 LLM 调用成本
+- **目标**：降低重复 embedding 和 LLM 调用成本，相同意图问题直接命中
 - **缓存类型**：
   - **Embedding 缓存**：文本 → vector 的 LRU 缓存
+  - **Semantic Cache**：query 语义相似度命中，不是字符串完全匹配；命中时直接返回答案，预计降低 30%+ LLM 调用成本
   - **检索结果缓存**：query → retrieval results 的缓存（带 TTL）
   - **LLM 响应缓存**：相同 prompt 直接命中（对确定性问题有效）
+- **Semantic Cache 关键点**：
+  - 用 embedding 计算 query 与历史 query 的余弦相似度
+  - 阈值以上视为同一意图
+  - 缓存内容：question → (answer, contexts, evaluation)
+  - 需考虑用户隔离（`user_id`）和资料时效性
 - **实现建议**：内存 LRU 作为默认，可选 Redis 扩展
 - **产出**：新增 `rag_agent/cache/`
 
@@ -161,15 +167,40 @@
   - 失败案例报告按用户反馈加权
 - **产出**：扩展 `rag_agent/evaluation/evaluator.py`
 
-#### P1-7 可观测性建设
+#### P1-7 可观测性建设（Trace 级别）
 
-- **目标**：建立结构化日志、链路追踪和核心指标监控
+- **目标**：建立结构化日志、链路追踪和核心指标监控，定位到具体 Tool Call / 检索步骤的问题
 - **内容**：
   - 结构化 JSON 日志替代纯文本日志
-  - Tracing：记录每次 `Agent.chat()` 的检索、生成、评估耗时
+  - **Trace 级别链路追踪**：每次 `Agent.chat()` 生成一个 trace，每个子步骤生成 span
+    - `retrieve.long_term_memory`
+    - `retrieve.knowledge_base`
+    - `rerank`
+    - `llm.generate`
+    - `memory.extract`
+    - `evaluate`
+  - 在 span 中记录：输入参数、输出摘要、耗时、token 用量、是否命中缓存、是否降级
+  - **定位幻觉/超时**：通过 trace 可看到是哪一步引入上下文外信息（如 `llm.generate` 输入的 contexts 不足）或哪一步超时（如 `llm.generate` / `retrieve`）
   - Metrics：检索命中率、LLM 调用成功率、平均延迟、评估分数分布
-- **可选工具**：LangSmith / Langfuse / OpenTelemetry
+- **可选工具**：
+  - **LangSmith**：与 OpenAI SDK 集成最方便，适合快速落地
+  - **Arize Phoenix**：开源，支持 LLM trace 与 evaluation 可视化
+  - **OpenTelemetry**：最通用，可接入任意 APM（Jaeger / Grafana Tempo）
 - **产出**：新增 `rag_agent/observability.py`
+
+#### P1-8 容错与重试机制
+
+- **目标**：提升 LLM 调用和工具调用的稳定性，单点失败时不中断主流程
+- **内容**：
+  - **指数退避重试**：对 LLM 网络超时 / 限流错误实现 `backoff` 重试（如 1s → 2s → 4s）
+  - **Fallback LLM 切换**：主模型失败时自动切到备用模型（如主模型 `qwen3.6-plus` → 备用 `qwen-turbo` → Mock）
+  - **降级状态机**：记录当前可用模型列表，健康检查失败后自动降级
+  - **工具调用失败处理**：工具调用超时或返回错误时，Agent 可捕获异常并尝试修复或换工具
+- **配置项**：
+  - `LLM_MAX_RETRIES=3`
+  - `LLM_RETRY_BACKOFF=2.0`
+  - `LLM_FALLBACK_MODELS=qwen-turbo,gpt-3.5-turbo`
+- **产出**：扩展 `rag_agent/llm.py`，新增 `rag_agent/resilience.py`
 
 ---
 
@@ -177,12 +208,15 @@
 
 这些项把项目从“高级 RAG”推向“Agent 系统”。
 
-#### P2-1 Agentic RAG
+#### P2-1 Agentic RAG（含 Self-Correction Loop）
 
-- **目标**：让 Agent 能主动判断是否需要补充检索、改写问题、使用工具
+- **目标**：让 Agent 能主动判断是否需要补充检索、改写问题、使用工具，并在失败时自我修复
 - **可选方向**：
   - **ReAct 循环**：检索 → 生成 → 反思 → 必要时再检索
   - **Self-RAG / Corrective RAG**：生成后自我评估，检索不足时修正
+  - **Self-Correction Loop**：工具调用失败 / 答案质量低时，自动重写 query、换工具或补充检索
+    - 例如：计算器返回错误 → 修正表达式再试一次
+    - 例如：Faithfulness 分数低 → 重新检索更相关的上下文
   - **查询路由**：根据问题类型选择 KB、长期记忆、Web Search、计算器等
 - **产出**：新增 `rag_agent/agentic/` 模块
 
@@ -254,10 +288,11 @@
 |---|---|---|
 | **阶段 1：工程基础** | P0-1 测试 + P0-4 配置 + P0-5 Python 版本 | 可放心改代码、可配置运行（P0-4/P0-5 已完成） |
 | **阶段 2：服务化** | P0-2 FastAPI + P0-3 异步 + P1-3 流式 | 项目变成可部署服务（P0-2/P0-3 已完成） |
-| **阶段 3：质量与成本** | P1-1 Query 改写 + P1-2 缓存 + P1-4 Parent Document | 回答质量与延迟双提升 |
-| **阶段 4：观测与反馈** | P1-7 可观测 + P1-6 用户反馈 | 建立持续优化数据基础 |
-| **阶段 5：Agent 化** | P2-1 Agentic RAG + P2-2 工具调用 | 从 RAG 升级为 Agent |
-| **阶段 6：安全与治理** | P2-3 护栏 + P2-5 文档增强 + P2-6 成本配额 | 具备生产级服务能力 |
+| **阶段 3：质量与成本** | P1-1 Query 改写 + P1-2 语义缓存 + P1-4 Parent Document | 回答质量与延迟双提升，成本下降 30%+ |
+| **阶段 4：稳定性** | P1-8 容错重试 + Fallback LLM | 生产环境单点失败自愈 |
+| **阶段 5：观测与反馈** | P1-7 Trace 可观测 + P1-6 用户反馈 | 建立持续优化数据基础，可定位幻觉/超时根因 |
+| **阶段 6：Agent 化** | P2-1 Agentic RAG（Self-Correction）+ P2-2 工具调用 | 从 RAG 升级为 Agent |
+| **阶段 7：安全与治理** | P2-3 护栏 + P2-5 文档增强 + P2-6 成本配额 | 具备生产级服务能力 |
 
 ---
 
@@ -274,10 +309,11 @@
 | 加载器 | `rag_agent/knowledge/loader.py` | trafilatura、OCR |
 | 记忆 | `rag_agent/memory/long_term.py` | 重要性、衰减、冲突检测 |
 | 评估 | `rag_agent/evaluation/evaluator.py` | 用户反馈、趋势分析 |
-| 配置 | 缺失 | 新增 `rag_agent/config.py` |
-| 服务 | 缺失 | 新增 `rag_agent/api/` |
-| 缓存 | 缺失 | 新增 `rag_agent/cache/` |
-| 可观测 | 缺失 | 新增 `rag_agent/observability.py` |
+| 配置 | `rag_agent/config.py` | 已落地，持续扩展新参数 |
+| 服务 | `rag_agent/api.py` | 已落地，持续扩展新端点 |
+| 缓存 | 缺失 | 新增 `rag_agent/cache/`，重点 Semantic Cache |
+| 可观测 | 缺失 | 新增 `rag_agent/observability.py`，对接 LangSmith / Phoenix / OpenTelemetry |
+| 容错 | 缺失 | 新增 `rag_agent/resilience.py`，指数退避 + Fallback LLM |
 | 测试 | 缺失 | 新增 `tests/` |
 
 ---
@@ -294,12 +330,19 @@
 
 完成阶段 4 后，项目应达到：
 
+- [ ] LLM 超时 / 限流时自动指数退避重试
+- [ ] 主模型失败时可切换到 Fallback LLM
+- [ ] 工具调用失败后有明确的错误捕获与反馈
+
+完成阶段 5 后，项目应达到：
+
 - [ ] 每次请求有 trace 记录各环节耗时
+- [ ] 通过 trace 可定位到具体哪一步导致幻觉或超时
 - [ ] 用户可提交 👍/👎 反馈
 - [ ] 低分案例能自动生成带根因的报告
 
-完成阶段 6 后，项目应达到：
+完成阶段 7 后，项目应达到：
 
-- [ ] 支持 Agentic 多步检索
+- [ ] 支持 Agentic 多步检索与 Self-Correction Loop
 - [ ] 支持至少 2 种外部工具
 - [ ] 具备基础 prompt injection 和 PII 检测
