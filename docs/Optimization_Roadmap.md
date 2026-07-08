@@ -122,20 +122,21 @@
 - **接入点**：`Agent` 检索前统一调用 `QueryTransformer`
 - **产出**：新增 `rag_agent/retrieval/query_transform.py`
 
-#### P1-2 引入多级缓存（含 Semantic Cache）
+#### P1-2 引入多级缓存（含 Semantic Cache）✅ 部分实现
 
 - **目标**：降低重复 embedding 和 LLM 调用成本，相同意图问题直接命中
-- **缓存类型**：
+- **已落地**：
+  - **Semantic Cache**：基于 query embedding 余弦相似度命中，命中时直接返回缓存答案，跳过 retrieval + LLM
+  - 实现文件：`rag_agent/cache/semantic_cache.py`
+  - 已接入：`Agent.chat()` / `achat()` / `achat_stream()` 在检索前优先查缓存，生成后自动写入缓存
+  - 配置项：`SEMANTIC_CACHE_ENABLED`（默认 true）、`SEMANTIC_CACHE_THRESHOLD`（默认 0.92）、`SEMANTIC_CACHE_TTL_SECONDS`
+  - 用户隔离：按 `user_id` 分桶，避免记忆泄露
+  - 容量控制：每用户最多 100 条，超出淘汰最旧
+- **待实现**：
   - **Embedding 缓存**：文本 → vector 的 LRU 缓存
-  - **Semantic Cache**：query 语义相似度命中，不是字符串完全匹配；命中时直接返回答案，预计降低 30%+ LLM 调用成本
   - **检索结果缓存**：query → retrieval results 的缓存（带 TTL）
   - **LLM 响应缓存**：相同 prompt 直接命中（对确定性问题有效）
-- **Semantic Cache 关键点**：
-  - 用 embedding 计算 query 与历史 query 的余弦相似度
-  - 阈值以上视为同一意图
-  - 缓存内容：question → (answer, contexts, evaluation)
-  - 需考虑用户隔离（`user_id`）和资料时效性
-- **实现建议**：内存 LRU 作为默认，可选 Redis 扩展
+  - 持久化：当前为内存缓存，可选 Redis / SQLite 持久化
 - **产出**：新增 `rag_agent/cache/`
 
 #### P1-3 流式生成
@@ -316,7 +317,8 @@
 | 评估 | `rag_agent/evaluation/evaluator.py` | 用户反馈、趋势分析 |
 | 配置 | `rag_agent/config.py` | 已落地，持续扩展新参数 |
 | 服务 | `rag_agent/api.py` | 已落地，持续扩展新端点 |
-| 缓存 | 缺失 | 新增 `rag_agent/cache/`，重点 Semantic Cache |
+| 检索增强 | `rag_agent/retrieval/query_transform.py` | 已落地 Query Rewriting |
+| 缓存 | `rag_agent/cache/semantic_cache.py` | 已落地 Semantic Cache；待扩展 embedding/检索结果缓存 |
 | 可观测 | 缺失 | 新增 `rag_agent/observability.py`，对接 LangSmith / Phoenix / OpenTelemetry |
 | 容错 | 缺失 | 新增 `rag_agent/resilience.py`，指数退避 + Fallback LLM |
 | 测试 | 缺失 | 新增 `tests/` |

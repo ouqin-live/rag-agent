@@ -6,7 +6,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from rag_agent.cache import SemanticCache
 from rag_agent.config import get_settings
+from rag_agent.embedder import get_embedder
 from rag_agent.evaluation import Evaluator
 from rag_agent.evaluation.base import EvaluationResult
 from rag_agent.knowledge import KnowledgeBase, RetrievalResult
@@ -38,6 +40,18 @@ def _build_query_transformer(llm_client: BaseLLMClient) -> QueryTransformer:
     )
 
 
+def _build_semantic_cache() -> SemanticCache | None:
+    """Build the default semantic cache based on application settings."""
+    settings = get_settings()
+    if not settings.semantic_cache_enabled:
+        return None
+    return SemanticCache(
+        embedder=get_embedder(),
+        threshold=settings.semantic_cache_threshold,
+        ttl_seconds=settings.semantic_cache_ttl_seconds,
+    )
+
+
 def _default_system_prompt() -> str:
     return get_settings().agent_system_prompt
 
@@ -50,6 +64,8 @@ class ChatResponse:
     contexts: list[RetrievalResult] = field(default_factory=list)
     long_term_facts: list[str] = field(default_factory=list)
     search_query: str = ""
+    cache_hit: bool = False
+    cached_query: str | None = None
     evaluation: EvaluationResult | None = None
 
 
@@ -64,6 +80,7 @@ class AgentConfig:
     evaluator: Evaluator | None = None
     llm_client: BaseLLMClient | None = None
     query_transformer: QueryTransformer | None = None
+    semantic_cache: SemanticCache | None = None
     system_prompt: str = field(default_factory=_default_system_prompt)
     fallback_enabled: bool = True
 
@@ -80,6 +97,9 @@ class Agent:
             self.config.query_transformer = _build_query_transformer(
                 self.config.llm_client
             )
+        # 默认初始化 semantic cache（如未显式传入）
+        if self.config.semantic_cache is None:
+            self.config.semantic_cache = _build_semantic_cache()
         # 有 LLM 时优先用 LLM 提取事实，失败自动降级到规则提取
         self.extractor = LLMMemoryExtractor(self.config.llm_client)
 
@@ -113,6 +133,22 @@ class Agent:
     # Internal turn logic
     # ------------------------------------------------------------------
     def _run_turn(self, user_id: str, question: str, sync: bool) -> ChatResponse:
+        # -1. Semantic cache lookup
+        cached = self._lookup_semantic_cache(user_id, question)
+        if cached is not None:
+            self.config.short_term_memory.add("user", question)
+            self.config.short_term_memory.add("assistant", cached["answer"])
+            self._archive_to_medium_term()
+            return ChatResponse(
+                answer=cached["answer"],
+                contexts=[],
+                long_term_facts=cached.get("long_term_facts", []),
+                search_query="",
+                cache_hit=True,
+                cached_query=cached.get("cached_query"),
+                evaluation=cached.get("evaluation"),
+            )
+
         # 0. Query transformation before retrieval
         search_queries = self.config.query_transformer.transform(
             question, self.config.short_term_memory.get_messages()
@@ -164,6 +200,16 @@ class Agent:
         # 7. Evaluate
         evaluation = self._evaluate(question, answer, contexts)
 
+        # 8. Store in semantic cache
+        self._store_semantic_cache(
+            user_id=user_id,
+            question=question,
+            answer=answer,
+            contexts=contexts,
+            long_term_facts=long_term_facts,
+            evaluation=evaluation,
+        )
+
         return ChatResponse(
             answer=answer,
             contexts=kb_results,
@@ -173,6 +219,22 @@ class Agent:
         )
 
     async def _run_turn_async(self, user_id: str, question: str) -> ChatResponse:
+        # -1. Semantic cache lookup
+        cached = self._lookup_semantic_cache(user_id, question)
+        if cached is not None:
+            self.config.short_term_memory.add("user", question)
+            self.config.short_term_memory.add("assistant", cached["answer"])
+            self._archive_to_medium_term()
+            return ChatResponse(
+                answer=cached["answer"],
+                contexts=[],
+                long_term_facts=cached.get("long_term_facts", []),
+                search_query="",
+                cache_hit=True,
+                cached_query=cached.get("cached_query"),
+                evaluation=cached.get("evaluation"),
+            )
+
         # 0. Query transformation before retrieval
         search_queries = await self.config.query_transformer.atransform(
             question, self.config.short_term_memory.get_messages()
@@ -224,6 +286,16 @@ class Agent:
         # 7. Evaluate
         evaluation = self._evaluate(question, answer, contexts)
 
+        # 8. Store in semantic cache
+        self._store_semantic_cache(
+            user_id=user_id,
+            question=question,
+            answer=answer,
+            contexts=contexts,
+            long_term_facts=long_term_facts,
+            evaluation=evaluation,
+        )
+
         return ChatResponse(
             answer=answer,
             contexts=kb_results,
@@ -242,6 +314,16 @@ class Agent:
         Yields answer chunks (strings). Short-term memory and evaluation are
         updated after the full answer has been produced.
         """
+        # -1. Semantic cache lookup
+        cached = self._lookup_semantic_cache(user_id, question)
+        if cached is not None:
+            answer = cached["answer"]
+            self.config.short_term_memory.add("user", question)
+            self.config.short_term_memory.add("assistant", answer)
+            self._archive_to_medium_term()
+            yield answer
+            return
+
         # 0. Query transformation before retrieval
         search_queries = await self.config.query_transformer.atransform(
             question, self.config.short_term_memory.get_messages()
@@ -294,6 +376,16 @@ class Agent:
 
         self._evaluate(question, full_answer, contexts)
 
+        # Store in semantic cache
+        self._store_semantic_cache(
+            user_id=user_id,
+            question=question,
+            answer=full_answer,
+            contexts=contexts,
+            long_term_facts=long_term_facts,
+            evaluation=None,  # streaming path does not keep evaluation object
+        )
+
     def _evaluate(
         self,
         question: str,
@@ -311,6 +403,33 @@ class Agent:
         except Exception as exc:
             logger.warning("Evaluation failed: %s", exc)
             return None
+
+    def _lookup_semantic_cache(
+        self, user_id: str, question: str
+    ) -> dict[str, Any] | None:
+        if not self.config.semantic_cache:
+            return None
+        return self.config.semantic_cache.lookup(question, user_id)
+
+    def _store_semantic_cache(
+        self,
+        user_id: str,
+        question: str,
+        answer: str,
+        contexts: list[str],
+        long_term_facts: list[str],
+        evaluation: EvaluationResult | None,
+    ) -> None:
+        if not self.config.semantic_cache:
+            return
+        self.config.semantic_cache.store(
+            query=question,
+            user_id=user_id,
+            answer=answer,
+            contexts=contexts,
+            long_term_facts=long_term_facts,
+            evaluation=evaluation,
+        )
 
     def _build_messages(
         self,

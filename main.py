@@ -41,6 +41,8 @@ _METRIC_NAMES = {
 
 def print_response(label: str, resp: ChatResponse) -> None:
     print(f"\n{label}")
+    if resp.cache_hit:
+        print(f"  ⚡ 缓存命中 (原缓存问题: {resp.cached_query})")
     if resp.search_query:
         print(f"  检索query: {resp.search_query}")
     print(f"  回答: {resp.answer[:100]}...")
@@ -157,8 +159,13 @@ def main() -> None:
     for i, fact in enumerate(all_facts, 1):
         print(f"  {i}. {fact.content}")
 
-    # 6. 评估报告
-    print("\n=== 6. 失败案例报告 ===")
+    # 6. 语义缓存验证：重复问一个相似问题
+    print("\n=== 6. 语义缓存验证 ===")
+    resp = agent.chat(user_id, "RAG 究竟是什么？")
+    print_response("User: RAG 究竟是什么？（应与第 2 轮语义相似）", resp)
+
+    # 7. 评估报告
+    print("\n=== 7. 失败案例报告 ===")
     report = agent.generate_failure_report(threshold=0.6, limit=10)
     if report:
         print(report)

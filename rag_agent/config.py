@@ -95,6 +95,18 @@ class Settings(BaseSettings):
         default=3,
         description="Max conversation turns used for query rewriting context",
     )
+    semantic_cache_enabled: bool = Field(
+        default=True,
+        description="Enable semantic cache for query/answer reuse",
+    )
+    semantic_cache_threshold: float = Field(
+        default=0.92,
+        description="Cosine similarity threshold for semantic cache hits",
+    )
+    semantic_cache_ttl_seconds: float | None = Field(
+        default=None,
+        description="TTL for semantic cache entries; None means no expiration",
+    )
     agent_system_prompt: str = Field(
         default=(
             "你是一个严谨的 RAG 助手。请仅根据提供的参考资料和已知用户信息回答问题，"

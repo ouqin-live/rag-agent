@@ -115,17 +115,27 @@ class SentenceTransformerEmbedder(BaseEmbedder):
         )
 
 
+from functools import lru_cache
+
+
+@lru_cache(maxsize=8)
+def _get_embedder_cached(model_name: str, fallback_dim: int) -> BaseEmbedder:
+    """Cached embedder factory to avoid loading the same model multiple times."""
+    return SentenceTransformerEmbedder(
+        model_name=model_name,
+        fallback_dim=fallback_dim,
+    )
+
+
 def get_embedder(model_name: str | None = None) -> BaseEmbedder:
     """Factory that returns a SentenceTransformer embedder with fallback.
 
     Uses the application settings by default, while still allowing an explicit
-    model name to be passed.
+    model name to be passed. Identical configurations are cached to avoid
+    loading the model more than once.
     """
     from rag_agent.config import get_settings
 
     settings = get_settings()
     name = model_name or settings.embedding_model
-    return SentenceTransformerEmbedder(
-        model_name=name,
-        fallback_dim=settings.embedding_fallback_dim,
-    )
+    return _get_embedder_cached(name, settings.embedding_fallback_dim)

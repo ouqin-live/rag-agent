@@ -178,6 +178,9 @@ await agent.achat("u1", "RAG 是什么？")
 ```
 u1 的问题
    │
+   ├──► SemanticCache.lookup("u1", "RAG 是什么？")
+   │      └── 命中则直接返回缓存答案，跳过后续所有步骤
+   │
    ├──► QueryTransformer.rewrite("RAG 是什么？", history)
    │      └── 返回改写后的检索 query（指代消解、口语化改写）
    │
@@ -263,6 +266,7 @@ uv run python -m rag_agent.api
 | 语义分块 | ✅ 已支持 | `SemanticChunker` |
 | 中期记忆摘要 | ✅ 已支持 | `MediumTermMemory` |
 | Query 改写 | ✅ 已支持 | `RewritingTransformer`，解决指代消解与口语化 |
+| 语义缓存 | ✅ 已支持 | `SemanticCache`，按意图相似度复用答案，跳过 LLM |
 | 异步与流式 | ✅ 已支持 | `achat` / `achat_stream` |
 | 统一配置管理 | ✅ 已支持 | `rag_agent/config.py` |
 | HyDE / Multi-Query / Step-back | ⏳ 待实现 | 见 `docs/Optimization_Roadmap.md` |
