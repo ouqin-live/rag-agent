@@ -10,6 +10,13 @@ from pathlib import Path
 from typing import Any
 
 
+_METRIC_NAMES = {
+    "faithfulness": "忠实度 (Faithfulness)",
+    "answer_relevance": "回答相关性 (Answer Relevance)",
+    "context_precision": "上下文精确率 (Context Precision)",
+}
+
+
 class ReportGenerator:
     """Generate human-readable or machine-readable evaluation reports."""
 
@@ -63,7 +70,8 @@ class ReportGenerator:
             try:
                 scores = json.loads(row["scores"])
                 for metric, score in scores.items():
-                    lines.append(f"- {metric}: {score:.4f}")
+                    display_name = _METRIC_NAMES.get(metric, metric)
+                    lines.append(f"- {display_name}: {score:.4f}")
             except Exception:
                 pass
             try:

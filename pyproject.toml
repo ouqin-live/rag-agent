@@ -3,7 +3,7 @@ name = "rag-agent"
 version = "0.2.0"
 description = "RAG Agent with memory, knowledge base, and auto-evaluation"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.10"
 dependencies = [
     "openai>=2.44.0",
     "sentence-transformers>=5.6.0",
@@ -13,4 +13,8 @@ dependencies = [
     "chromadb>=0.5.0",
     "python-dotenv>=1.0.0",
     "rank-bm25>=0.2.2",
+    "pydantic-settings>=2.0.0",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.27.0",
+    "python-multipart>=0.0.9",
 ]

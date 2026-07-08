@@ -23,7 +23,11 @@ class ShortTermMemory:
     When the limit is exceeded, the oldest complete turn is dropped.
     """
 
-    def __init__(self, max_turns: int = 6):
+    def __init__(self, max_turns: int | None = None):
+        from rag_agent.config import get_settings
+
+        if max_turns is None:
+            max_turns = get_settings().agent_max_turns
         if max_turns < 1:
             raise ValueError("max_turns must be at least 1")
         self.max_turns = max_turns

@@ -43,10 +43,18 @@ class LongTermMemory:
         self,
         store: VectorStore,
         embedder: BaseEmbedder,
-        dedup_threshold: float = 0.92,
-        merge_threshold: float = 0.80,
-        max_facts_per_user: int = 100,
+        dedup_threshold: float | None = None,
+        merge_threshold: float | None = None,
+        max_facts_per_user: int | None = None,
     ):
+        from rag_agent.config import get_settings
+
+        settings = get_settings()
+        dedup_threshold = dedup_threshold if dedup_threshold is not None else settings.memory_dedup_threshold
+        merge_threshold = merge_threshold if merge_threshold is not None else settings.memory_merge_threshold
+        max_facts_per_user = (
+            max_facts_per_user if max_facts_per_user is not None else settings.memory_max_facts_per_user
+        )
         self.store = store
         self.embedder = embedder
         self.dedup_threshold = dedup_threshold

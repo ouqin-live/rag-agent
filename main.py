@@ -28,6 +28,13 @@ def setup_test_docs(tmpdir: Path) -> Path:
     return md_path
 
 
+_METRIC_NAMES = {
+    "faithfulness": "忠实度 (Faithfulness)",
+    "answer_relevance": "回答相关性 (Answer Relevance)",
+    "context_precision": "上下文精确率 (Context Precision)",
+}
+
+
 def print_response(label: str, resp: ChatResponse) -> None:
     print(f"\n{label}")
     print(f"  回答: {resp.answer[:100]}...")
@@ -38,7 +45,8 @@ def print_response(label: str, resp: ChatResponse) -> None:
     if resp.evaluation:
         print(f"  综合评分: {resp.evaluation.overall_score:.4f}")
         for name, score in resp.evaluation.scores.items():
-            print(f"    - {name}: {score:.4f}")
+            display_name = _METRIC_NAMES.get(name, name)
+            print(f"    - {display_name}: {score:.4f}")
 
 
 def main() -> None:

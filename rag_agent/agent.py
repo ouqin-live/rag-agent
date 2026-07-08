@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from rag_agent.config import get_settings
 from rag_agent.evaluation import Evaluator
 from rag_agent.evaluation.base import EvaluationResult
 from rag_agent.knowledge import KnowledgeBase, RetrievalResult
@@ -19,6 +20,10 @@ from rag_agent.memory import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _default_system_prompt() -> str:
+    return get_settings().agent_system_prompt
 
 
 @dataclass
@@ -41,7 +46,7 @@ class AgentConfig:
     long_term_memory: LongTermMemory | None = None
     evaluator: Evaluator | None = None
     llm_client: BaseLLMClient | None = None
-    system_prompt: str = "你是一个严谨的 RAG 助手。请仅根据提供的参考资料和已知用户信息回答问题，不要编造参考资料之外的信息。如果参考资料不足，请明确说明。"
+    system_prompt: str = field(default_factory=_default_system_prompt)
     fallback_enabled: bool = True
 
 
@@ -56,15 +61,47 @@ class Agent:
         self.extractor = LLMMemoryExtractor(self.config.llm_client)
 
     def chat(self, user_id: str, question: str) -> ChatResponse:
-        """Run a full question-answering turn."""
+        """Run a full question-answering turn (synchronous)."""
+        return self._run_turn(user_id, question, sync=True)
+
+    async def achat(self, user_id: str, question: str) -> ChatResponse:
+        """Run a full question-answering turn (asynchronous)."""
+        return await self._run_turn_async(user_id, question)
+
+    def reset_session(self) -> None:
+        """Clear the current short-term conversation history."""
+        self.config.short_term_memory.clear()
+
+    def generate_failure_report(
+        self,
+        threshold: float | None = None,
+        limit: int = 20,
+    ) -> str | None:
+        """Generate a text report of recent failure cases."""
+        if self.config.evaluator is None:
+            return None
+        from rag_agent.evaluation.report import ReportGenerator
+
+        threshold = threshold or self.config.evaluator.failure_threshold
+        report_gen = ReportGenerator(db_path=self.config.evaluator.db_path)
+        return report_gen.generate_text_report(threshold=threshold, limit=limit)
+
+    # ------------------------------------------------------------------
+    # Internal turn logic
+    # ------------------------------------------------------------------
+    def _run_turn(self, user_id: str, question: str, sync: bool) -> ChatResponse:
         # 1. Long-term memory recall
         long_term_facts: list[str] = []
         if self.config.long_term_memory:
             facts = self.config.long_term_memory.recall(user_id, question, top_k=3)
             long_term_facts = [f.content for f in facts]
 
-        # 2. 混合检索：Dense + BM25 + RRF 融合
-        kb_results = self.config.knowledge_base.hybrid_search(question, top_k=5)
+        settings = get_settings()
+        temperature = settings.llm_temperature
+        top_k = settings.agent_top_k
+
+        # 2. 混合检索
+        kb_results = self.config.knowledge_base.hybrid_search(question, top_k=top_k)
         contexts = [r.text for r in kb_results]
 
         # 3. Build prompt
@@ -76,7 +113,7 @@ class Agent:
 
         # 4. LLM generation with fallback
         try:
-            answer = self.config.llm_client.generate(messages, temperature=0.3)
+            answer = self.config.llm_client.generate(messages, temperature=temperature)
         except Exception as exc:
             logger.warning("LLM generation failed: %s", exc)
             if self.config.fallback_enabled:
@@ -84,7 +121,7 @@ class Agent:
             else:
                 raise
 
-        # 5. Update short-term memory（归档旧轮次到中期记忆）
+        # 5. Update short-term memory and archive
         self.config.short_term_memory.add("user", question)
         self.config.short_term_memory.add("assistant", answer)
         self._archive_to_medium_term()
@@ -96,16 +133,7 @@ class Agent:
                 self.config.long_term_memory.remember(user_id, fact)
 
         # 7. Evaluate
-        evaluation = None
-        if self.config.evaluator:
-            try:
-                evaluation = self.config.evaluator.evaluate(
-                    question=question,
-                    answer=answer,
-                    contexts=contexts,
-                )
-            except Exception as exc:
-                logger.warning("Evaluation failed: %s", exc)
+        evaluation = self._evaluate(question, answer, contexts)
 
         return ChatResponse(
             answer=answer,
@@ -114,22 +142,132 @@ class Agent:
             evaluation=evaluation,
         )
 
-    def reset_session(self) -> None:
-        """Clear the current short-term conversation history."""
-        self.config.short_term_memory.clear()
+    async def _run_turn_async(self, user_id: str, question: str) -> ChatResponse:
+        # 1. Long-term memory recall (sync vector search is fast; keep sync)
+        long_term_facts: list[str] = []
+        if self.config.long_term_memory:
+            facts = self.config.long_term_memory.recall(user_id, question, top_k=3)
+            long_term_facts = [f.content for f in facts]
 
-    def generate_failure_report(
+        settings = get_settings()
+        temperature = settings.llm_temperature
+        top_k = settings.agent_top_k
+
+        # 2. 混合检索
+        kb_results = self.config.knowledge_base.hybrid_search(question, top_k=top_k)
+        contexts = [r.text for r in kb_results]
+
+        # 3. Build prompt
+        messages = self._build_messages(
+            question=question,
+            long_term_facts=long_term_facts,
+            contexts=contexts,
+        )
+
+        # 4. Async LLM generation with fallback
+        try:
+            answer = await self.config.llm_client.agenerate(messages, temperature=temperature)
+        except Exception as exc:
+            logger.warning("LLM generation failed: %s", exc)
+            if self.config.fallback_enabled:
+                answer = self._fallback_generate(question, contexts)
+            else:
+                raise
+
+        # 5. Update short-term memory and archive
+        self.config.short_term_memory.add("user", question)
+        self.config.short_term_memory.add("assistant", answer)
+        self._archive_to_medium_term()
+
+        # 6. Extract and store long-term facts
+        if self.config.long_term_memory is not None:
+            facts = self.extractor.extract(question, answer)
+            for fact in facts:
+                self.config.long_term_memory.remember(user_id, fact)
+
+        # 7. Evaluate
+        evaluation = self._evaluate(question, answer, contexts)
+
+        return ChatResponse(
+            answer=answer,
+            contexts=kb_results,
+            long_term_facts=long_term_facts,
+            evaluation=evaluation,
+        )
+
+    async def achat_stream(
         self,
-        threshold: float = 0.6,
-        limit: int = 20,
-    ) -> str | None:
-        """Generate a text report of recent failure cases."""
-        if self.config.evaluator is None:
-            return None
-        from rag_agent.evaluation.report import ReportGenerator
+        user_id: str,
+        question: str,
+    ):
+        """Stream the answer token by token.
 
-        report_gen = ReportGenerator(db_path=self.config.evaluator.db_path)
-        return report_gen.generate_text_report(threshold=threshold, limit=limit)
+        Yields answer chunks (strings). Short-term memory and evaluation are
+        updated after the full answer has been produced.
+        """
+        long_term_facts: list[str] = []
+        if self.config.long_term_memory:
+            facts = self.config.long_term_memory.recall(user_id, question, top_k=3)
+            long_term_facts = [f.content for f in facts]
+
+        settings = get_settings()
+        temperature = settings.llm_temperature
+        top_k = settings.agent_top_k
+
+        kb_results = self.config.knowledge_base.hybrid_search(question, top_k=top_k)
+        contexts = [r.text for r in kb_results]
+
+        messages = self._build_messages(
+            question=question,
+            long_term_facts=long_term_facts,
+            contexts=contexts,
+        )
+
+        full_answer = ""
+        try:
+            async for chunk in self.config.llm_client.agenerate_stream(
+                messages, temperature=temperature
+            ):
+                full_answer += chunk
+                yield chunk
+        except Exception as exc:
+            logger.warning("LLM streaming failed: %s", exc)
+            if self.config.fallback_enabled:
+                fallback = self._fallback_generate(question, contexts)
+                full_answer = fallback
+                yield fallback
+            else:
+                raise
+
+        # Post-turn bookkeeping after streaming completes
+        self.config.short_term_memory.add("user", question)
+        self.config.short_term_memory.add("assistant", full_answer)
+        self._archive_to_medium_term()
+
+        if self.config.long_term_memory is not None:
+            facts = self.extractor.extract(question, full_answer)
+            for fact in facts:
+                self.config.long_term_memory.remember(user_id, fact)
+
+        self._evaluate(question, full_answer, contexts)
+
+    def _evaluate(
+        self,
+        question: str,
+        answer: str,
+        contexts: list[str],
+    ) -> EvaluationResult | None:
+        if not self.config.evaluator:
+            return None
+        try:
+            return self.config.evaluator.evaluate(
+                question=question,
+                answer=answer,
+                contexts=contexts,
+            )
+        except Exception as exc:
+            logger.warning("Evaluation failed: %s", exc)
+            return None
 
     def _build_messages(
         self,

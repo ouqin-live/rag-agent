@@ -1,7 +1,8 @@
-"""Embedding wrappers with offline fallback."""
+"""Embedding wrappers with offline fallback and async support."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -18,6 +19,16 @@ class BaseEmbedder(ABC):
     def encode(self, texts: list[str], normalize_embeddings: bool = True) -> np.ndarray:
         """Return an array of shape (len(texts), dim)."""
         ...
+
+    async def aencode(
+        self, texts: list[str], normalize_embeddings: bool = True
+    ) -> np.ndarray:
+        """Async version of ``encode``.
+
+        The default implementation runs the synchronous ``encode`` in a thread
+        pool so that subclasses only need to override ``encode``.
+        """
+        return await asyncio.to_thread(self.encode, texts, normalize_embeddings)
 
     @property
     @abstractmethod
@@ -105,6 +116,16 @@ class SentenceTransformerEmbedder(BaseEmbedder):
 
 
 def get_embedder(model_name: str | None = None) -> BaseEmbedder:
-    """Factory that returns a SentenceTransformer embedder with fallback."""
-    name = model_name or os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
-    return SentenceTransformerEmbedder(model_name=name)
+    """Factory that returns a SentenceTransformer embedder with fallback.
+
+    Uses the application settings by default, while still allowing an explicit
+    model name to be passed.
+    """
+    from rag_agent.config import get_settings
+
+    settings = get_settings()
+    name = model_name or settings.embedding_model
+    return SentenceTransformerEmbedder(
+        model_name=name,
+        fallback_dim=settings.embedding_fallback_dim,
+    )

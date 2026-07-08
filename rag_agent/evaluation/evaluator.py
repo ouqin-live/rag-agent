@@ -28,14 +28,23 @@ class Evaluator:
         metrics: list[BaseMetric] | None = None,
         rules: RuleChecker | None = None,
         db_path: str | Path | None = None,
-        failure_threshold: float = 0.6,
+        failure_threshold: float | None = None,
     ):
+        from rag_agent.config import get_settings
+
+        settings = get_settings()
+        failure_threshold = (
+            failure_threshold if failure_threshold is not None else settings.eval_failure_threshold
+        )
         self.metrics = metrics or [
             FaithfulnessMetric(),
             AnswerRelevanceMetric(),
             ContextPrecisionMetric(),
         ]
-        self.rules = rules or DefaultRuleChecker()
+        self.rules = rules or DefaultRuleChecker(
+            min_length=settings.eval_answer_min_length,
+            max_length=settings.eval_answer_max_length,
+        )
         self.db_path = Path(db_path) if db_path else Path("data/eval/evaluations.db")
         self.failure_threshold = failure_threshold
 
