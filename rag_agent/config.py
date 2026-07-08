@@ -87,6 +87,14 @@ class Settings(BaseSettings):
         default=6,
         description="Default short-term memory turn limit",
     )
+    query_transform_enabled: bool = Field(
+        default=True,
+        description="Enable query rewriting before retrieval",
+    )
+    query_transform_max_history_turns: int = Field(
+        default=3,
+        description="Max conversation turns used for query rewriting context",
+    )
     agent_system_prompt: str = Field(
         default=(
             "你是一个严谨的 RAG 助手。请仅根据提供的参考资料和已知用户信息回答问题，"

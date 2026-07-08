@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 import tempfile
 from pathlib import Path
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
 
 from rag_agent.agent import Agent, AgentConfig, ChatResponse
 from rag_agent.embedder import get_embedder
@@ -37,6 +43,8 @@ _METRIC_NAMES = {
 
 def print_response(label: str, resp: ChatResponse) -> None:
     print(f"\n{label}")
+    if resp.search_query:
+        print(f"  检索query: {resp.search_query}")
     print(f"  回答: {resp.answer[:100]}...")
     if resp.long_term_facts:
         print("  召回长期记忆:")

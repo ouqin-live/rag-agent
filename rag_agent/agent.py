@@ -18,8 +18,24 @@ from rag_agent.memory import (
     RuleBasedMemoryExtractor,
     ShortTermMemory,
 )
+from rag_agent.retrieval import (
+    IdentityTransformer,
+    QueryTransformer,
+    RewritingTransformer,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _build_query_transformer(llm_client: BaseLLMClient) -> QueryTransformer:
+    """Build the default query transformer based on application settings."""
+    settings = get_settings()
+    if not settings.query_transform_enabled:
+        return IdentityTransformer()
+    return RewritingTransformer(
+        llm_client=llm_client,
+        max_history_turns=settings.query_transform_max_history_turns,
+    )
 
 
 def _default_system_prompt() -> str:
@@ -33,6 +49,7 @@ class ChatResponse:
     answer: str
     contexts: list[RetrievalResult] = field(default_factory=list)
     long_term_facts: list[str] = field(default_factory=list)
+    search_query: str = ""
     evaluation: EvaluationResult | None = None
 
 
@@ -46,6 +63,7 @@ class AgentConfig:
     long_term_memory: LongTermMemory | None = None
     evaluator: Evaluator | None = None
     llm_client: BaseLLMClient | None = None
+    query_transformer: QueryTransformer | None = None
     system_prompt: str = field(default_factory=_default_system_prompt)
     fallback_enabled: bool = True
 
@@ -57,6 +75,11 @@ class Agent:
         self.config = config
         if self.config.llm_client is None:
             self.config.llm_client = MockLLMClient()
+        # 默认初始化 query transformer（如未显式传入）
+        if self.config.query_transformer is None:
+            self.config.query_transformer = _build_query_transformer(
+                self.config.llm_client
+            )
         # 有 LLM 时优先用 LLM 提取事实，失败自动降级到规则提取
         self.extractor = LLMMemoryExtractor(self.config.llm_client)
 
@@ -90,10 +113,16 @@ class Agent:
     # Internal turn logic
     # ------------------------------------------------------------------
     def _run_turn(self, user_id: str, question: str, sync: bool) -> ChatResponse:
+        # 0. Query transformation before retrieval
+        search_queries = self.config.query_transformer.transform(
+            question, self.config.short_term_memory.get_messages()
+        )
+        search_query = search_queries[0] if search_queries else question
+
         # 1. Long-term memory recall
         long_term_facts: list[str] = []
         if self.config.long_term_memory:
-            facts = self.config.long_term_memory.recall(user_id, question, top_k=3)
+            facts = self.config.long_term_memory.recall(user_id, search_query, top_k=3)
             long_term_facts = [f.content for f in facts]
 
         settings = get_settings()
@@ -101,7 +130,7 @@ class Agent:
         top_k = settings.agent_top_k
 
         # 2. 混合检索
-        kb_results = self.config.knowledge_base.hybrid_search(question, top_k=top_k)
+        kb_results = self.config.knowledge_base.hybrid_search(search_query, top_k=top_k)
         contexts = [r.text for r in kb_results]
 
         # 3. Build prompt
@@ -139,14 +168,21 @@ class Agent:
             answer=answer,
             contexts=kb_results,
             long_term_facts=long_term_facts,
+            search_query=search_query,
             evaluation=evaluation,
         )
 
     async def _run_turn_async(self, user_id: str, question: str) -> ChatResponse:
+        # 0. Query transformation before retrieval
+        search_queries = await self.config.query_transformer.atransform(
+            question, self.config.short_term_memory.get_messages()
+        )
+        search_query = search_queries[0] if search_queries else question
+
         # 1. Long-term memory recall (sync vector search is fast; keep sync)
         long_term_facts: list[str] = []
         if self.config.long_term_memory:
-            facts = self.config.long_term_memory.recall(user_id, question, top_k=3)
+            facts = self.config.long_term_memory.recall(user_id, search_query, top_k=3)
             long_term_facts = [f.content for f in facts]
 
         settings = get_settings()
@@ -154,7 +190,7 @@ class Agent:
         top_k = settings.agent_top_k
 
         # 2. 混合检索
-        kb_results = self.config.knowledge_base.hybrid_search(question, top_k=top_k)
+        kb_results = self.config.knowledge_base.hybrid_search(search_query, top_k=top_k)
         contexts = [r.text for r in kb_results]
 
         # 3. Build prompt
@@ -192,6 +228,7 @@ class Agent:
             answer=answer,
             contexts=kb_results,
             long_term_facts=long_term_facts,
+            search_query=search_query,
             evaluation=evaluation,
         )
 
@@ -205,16 +242,22 @@ class Agent:
         Yields answer chunks (strings). Short-term memory and evaluation are
         updated after the full answer has been produced.
         """
+        # 0. Query transformation before retrieval
+        search_queries = await self.config.query_transformer.atransform(
+            question, self.config.short_term_memory.get_messages()
+        )
+        search_query = search_queries[0] if search_queries else question
+
         long_term_facts: list[str] = []
         if self.config.long_term_memory:
-            facts = self.config.long_term_memory.recall(user_id, question, top_k=3)
+            facts = self.config.long_term_memory.recall(user_id, search_query, top_k=3)
             long_term_facts = [f.content for f in facts]
 
         settings = get_settings()
         temperature = settings.llm_temperature
         top_k = settings.agent_top_k
 
-        kb_results = self.config.knowledge_base.hybrid_search(question, top_k=top_k)
+        kb_results = self.config.knowledge_base.hybrid_search(search_query, top_k=top_k)
         contexts = [r.text for r in kb_results]
 
         messages = self._build_messages(

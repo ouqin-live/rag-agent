@@ -106,15 +106,20 @@
 
 这些项能显著改善回答质量、延迟、成本和用户体验。
 
-#### P1-1 Query 理解与改写
+#### P1-1 Query 理解与改写 ✅ 部分实现
 
 - **目标**：在检索前对用户问题进行预处理，提升召回质量
-- **可选策略**：
-  - **Query Rewriting**：指代消解、口语化改写
+- **已落地**：
+  - **Query Rewriting**：基于对话历史的指代消解与口语化改写
+  - 实现文件：`rag_agent/retrieval/query_transform.py`
+  - 已接入：`Agent.chat()` / `achat()` / `achat_stream()` 在检索前自动调用
+  - 配置项：`QUERY_TRANSFORM_ENABLED` / `QUERY_TRANSFORM_MAX_HISTORY_TURNS`
+  - 效果示例：`"那它怎么减少幻觉？"` → `"RAG（检索增强生成）是如何减少幻觉的？"`
+- **待实现**：
   - **HyDE**：让 LLM 生成假设答案，再用假设答案做向量检索
   - **Multi-Query Retrieval**：一个问题生成多角度查询，合并结果
   - **Step-back Prompting**：先检索抽象概念，再检索细节
-- **接入点**：`Agent.chat()` 调用 `KnowledgeBase.hybrid_search()` 之前
+- **接入点**：`Agent` 检索前统一调用 `QueryTransformer`
 - **产出**：新增 `rag_agent/retrieval/query_transform.py`
 
 #### P1-2 引入多级缓存（含 Semantic Cache）

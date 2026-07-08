@@ -178,6 +178,9 @@ await agent.achat("u1", "RAG 是什么？")
 ```
 u1 的问题
    │
+   ├──► QueryTransformer.rewrite("RAG 是什么？", history)
+   │      └── 返回改写后的检索 query（指代消解、口语化改写）
+   │
    ├──► LongTermMemory.recall("u1", "RAG 是什么？")
    │      └── 返回 ["用户偏好中文回答", "用户喜欢简洁解释"]
    │
@@ -259,9 +262,10 @@ uv run python -m rag_agent.api
 | 重排序模型 | ✅ 已支持 | `EmbeddingReranker` / `CrossEncoderReranker` |
 | 语义分块 | ✅ 已支持 | `SemanticChunker` |
 | 中期记忆摘要 | ✅ 已支持 | `MediumTermMemory` |
+| Query 改写 | ✅ 已支持 | `RewritingTransformer`，解决指代消解与口语化 |
 | 异步与流式 | ✅ 已支持 | `achat` / `achat_stream` |
 | 统一配置管理 | ✅ 已支持 | `rag_agent/config.py` |
-| Query 改写 / HyDE | ⏳ 待实现 | 见 `docs/Optimization_Roadmap.md` |
+| HyDE / Multi-Query / Step-back | ⏳ 待实现 | 见 `docs/Optimization_Roadmap.md` |
 | 缓存层 | ⏳ 待实现 | embedding / 检索结果 / 响应缓存 |
 | 可观测性 | ⏳ 待实现 | tracing / metrics |
 | Agentic RAG / 工具调用 | ⏳ 待实现 | ReAct / self-reflection / web search |
