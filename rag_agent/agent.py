@@ -6,6 +6,13 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from rag_agent.agentic import (
+    BaseTool,
+    QueryRouter,
+    ReactLoop,
+    RuleBasedRouter,
+    SelfCorrector,
+)
 from rag_agent.cache import SemanticCache
 from rag_agent.config import get_settings
 from rag_agent.embedder import get_embedder
@@ -83,6 +90,11 @@ class AgentConfig:
     semantic_cache: SemanticCache | None = None
     system_prompt: str = field(default_factory=_default_system_prompt)
     fallback_enabled: bool = True
+    # Agentic RAG (P2-1)
+    agentic_enabled: bool = False
+    router: QueryRouter | None = None
+    tools: dict[str, BaseTool] | None = None
+    self_corrector: SelfCorrector | None = None
 
 
 class Agent:
@@ -102,13 +114,56 @@ class Agent:
             self.config.semantic_cache = _build_semantic_cache()
         # 有 LLM 时优先用 LLM 提取事实，失败自动降级到规则提取
         self.extractor = LLMMemoryExtractor(self.config.llm_client)
+        # 默认初始化 agentic 组件
+        self._init_agentic()
+
+    def _init_agentic(self) -> None:
+        """Initialize the ReAct loop when agentic mode is enabled."""
+        if not self.config.agentic_enabled:
+            self._react_loop: ReactLoop | None = None
+            return
+
+        settings = get_settings()
+        router = self.config.router
+        if router is None and settings.agentic_use_llm_router:
+            from rag_agent.agentic.router import LLMQueryRouter
+
+            router = LLMQueryRouter(llm_client=self.config.llm_client)
+        router = router or RuleBasedRouter()
+
+        self_corrector = self.config.self_corrector or SelfCorrector(
+            llm_client=self.config.llm_client,
+            threshold=settings.agentic_faithfulness_threshold,
+            max_iterations=settings.agentic_max_iterations,
+        )
+
+        self._react_loop = ReactLoop(
+            llm_client=self.config.llm_client,
+            knowledge_base=self.config.knowledge_base,
+            long_term_memory=self.config.long_term_memory,
+            short_term_memory=self.config.short_term_memory,
+            medium_term_memory=self.config.medium_term_memory,
+            router=router,
+            self_corrector=self_corrector,
+            query_transformer=self.config.query_transformer,
+            evaluator=self.config.evaluator,
+            tools=self.config.tools or {},
+            system_prompt=self.config.system_prompt,
+            max_iterations=settings.agentic_max_iterations,
+            top_k=settings.agent_top_k,
+            temperature=settings.llm_temperature,
+        )
 
     def chat(self, user_id: str, question: str) -> ChatResponse:
         """Run a full question-answering turn (synchronous)."""
+        if self.config.agentic_enabled and self._react_loop is not None:
+            return self._run_agentic_turn(user_id, question)
         return self._run_turn(user_id, question, sync=True)
 
     async def achat(self, user_id: str, question: str) -> ChatResponse:
         """Run a full question-answering turn (asynchronous)."""
+        if self.config.agentic_enabled and self._react_loop is not None:
+            return await self._run_agentic_turn_async(user_id, question)
         return await self._run_turn_async(user_id, question)
 
     def reset_session(self) -> None:
@@ -133,21 +188,10 @@ class Agent:
     # Internal turn logic
     # ------------------------------------------------------------------
     def _run_turn(self, user_id: str, question: str, sync: bool) -> ChatResponse:
-        # -1. Semantic cache lookup
-        cached = self._lookup_semantic_cache(user_id, question)
+        # -1. 优先命中语义缓存
+        cached = self._try_semantic_cache(user_id, question)
         if cached is not None:
-            self.config.short_term_memory.add("user", question)
-            self.config.short_term_memory.add("assistant", cached["answer"])
-            self._archive_to_medium_term()
-            return ChatResponse(
-                answer=cached["answer"],
-                contexts=[],
-                long_term_facts=cached.get("long_term_facts", []),
-                search_query="",
-                cache_hit=True,
-                cached_query=cached.get("cached_query"),
-                evaluation=cached.get("evaluation"),
-            )
+            return cached
 
         # 0. Query transformation before retrieval
         search_queries = self.config.query_transformer.transform(
@@ -165,8 +209,12 @@ class Agent:
         temperature = settings.llm_temperature
         top_k = settings.agent_top_k
 
-        # 2. 混合检索
-        kb_results = self.config.knowledge_base.hybrid_search(search_query, top_k=top_k)
+        # 2. 混合检索（失败不中断主流程，降级为空上下文）
+        kb_results: list[RetrievalResult] = []
+        try:
+            kb_results = self.config.knowledge_base.hybrid_search(search_query, top_k=top_k)
+        except Exception as exc:
+            logger.warning("Knowledge base retrieval failed: %s", exc)
         contexts = [r.text for r in kb_results]
 
         # 3. Build prompt
@@ -219,21 +267,10 @@ class Agent:
         )
 
     async def _run_turn_async(self, user_id: str, question: str) -> ChatResponse:
-        # -1. Semantic cache lookup
-        cached = self._lookup_semantic_cache(user_id, question)
+        # -1. 优先命中语义缓存
+        cached = self._try_semantic_cache(user_id, question)
         if cached is not None:
-            self.config.short_term_memory.add("user", question)
-            self.config.short_term_memory.add("assistant", cached["answer"])
-            self._archive_to_medium_term()
-            return ChatResponse(
-                answer=cached["answer"],
-                contexts=[],
-                long_term_facts=cached.get("long_term_facts", []),
-                search_query="",
-                cache_hit=True,
-                cached_query=cached.get("cached_query"),
-                evaluation=cached.get("evaluation"),
-            )
+            return cached
 
         # 0. Query transformation before retrieval
         search_queries = await self.config.query_transformer.atransform(
@@ -251,8 +288,12 @@ class Agent:
         temperature = settings.llm_temperature
         top_k = settings.agent_top_k
 
-        # 2. 混合检索
-        kb_results = self.config.knowledge_base.hybrid_search(search_query, top_k=top_k)
+        # 2. 混合检索（失败不中断主流程，降级为空上下文）
+        kb_results: list[RetrievalResult] = []
+        try:
+            kb_results = self.config.knowledge_base.hybrid_search(search_query, top_k=top_k)
+        except Exception as exc:
+            logger.warning("Knowledge base retrieval failed: %s", exc)
         contexts = [r.text for r in kb_results]
 
         # 3. Build prompt
@@ -314,7 +355,7 @@ class Agent:
         Yields answer chunks (strings). Short-term memory and evaluation are
         updated after the full answer has been produced.
         """
-        # -1. Semantic cache lookup
+        # -1. 优先命中语义缓存
         cached = self._lookup_semantic_cache(user_id, question)
         if cached is not None:
             answer = cached["answer"]
@@ -322,6 +363,37 @@ class Agent:
             self.config.short_term_memory.add("assistant", answer)
             self._archive_to_medium_term()
             yield answer
+            return
+
+        # Agentic 模式：执行一轮 ReAct 循环后模拟流式输出
+        if self.config.agentic_enabled and self._react_loop is not None:
+            result = await self._react_loop.arun(
+                user_id, question, self._get_history_messages()
+            )
+            answer = result.answer
+            contexts = [r.text for r in result.contexts]
+            yield answer
+
+            # 本轮后处理：记忆、事实提取、评估、缓存
+            self.config.short_term_memory.add("user", question)
+            self.config.short_term_memory.add("assistant", answer)
+            self._archive_to_medium_term()
+
+            if self.config.long_term_memory is not None:
+                facts = self.extractor.extract(question, answer)
+                for fact in facts:
+                    self.config.long_term_memory.remember(user_id, fact)
+
+            self._evaluate(question, answer, contexts)
+
+            self._store_semantic_cache(
+                user_id=user_id,
+                question=question,
+                answer=answer,
+                contexts=contexts,
+                long_term_facts=result.long_term_facts,
+                evaluation=None,
+            )
             return
 
         # 0. Query transformation before retrieval
@@ -339,7 +411,11 @@ class Agent:
         temperature = settings.llm_temperature
         top_k = settings.agent_top_k
 
-        kb_results = self.config.knowledge_base.hybrid_search(search_query, top_k=top_k)
+        kb_results: list[RetrievalResult] = []
+        try:
+            kb_results = self.config.knowledge_base.hybrid_search(search_query, top_k=top_k)
+        except Exception as exc:
+            logger.warning("Knowledge base retrieval failed: %s", exc)
         contexts = [r.text for r in kb_results]
 
         messages = self._build_messages(
@@ -502,3 +578,108 @@ class Agent:
             summary = "；".join(contexts[:2])
             return f"基于参考资料：{summary}。"
         return "当前无法生成回答，请稍后再试。"
+
+    # ------------------------------------------------------------------
+    # Agentic RAG turn logic (P2-1)
+    # ------------------------------------------------------------------
+
+    def _run_agentic_turn(self, user_id: str, question: str) -> ChatResponse:
+        """同步执行一轮 ReAct / 自我修正。"""
+        assert self._react_loop is not None
+
+        # 优先命中语义缓存，避免重复执行 ReAct 循环
+        cached = self._try_semantic_cache(user_id, question)
+        if cached is not None:
+            return cached
+
+        history = self._get_history_messages()
+        result = self._react_loop.run(user_id, question, history)
+
+        return self._finalize_agentic_turn(user_id, question, result)
+
+    async def _run_agentic_turn_async(
+        self, user_id: str, question: str
+    ) -> ChatResponse:
+        """异步执行一轮 ReAct / 自我修正。"""
+        assert self._react_loop is not None
+
+        # 优先命中语义缓存，避免重复执行 ReAct 循环
+        cached = self._try_semantic_cache(user_id, question)
+        if cached is not None:
+            return cached
+
+        history = self._get_history_messages()
+        result = await self._react_loop.arun(user_id, question, history)
+
+        return self._finalize_agentic_turn(user_id, question, result)
+
+    def _finalize_agentic_turn(
+        self, user_id: str, question: str, result: "ReactResult"
+    ) -> ChatResponse:
+        """Post-process an agentic turn: memory, evaluation, cache."""
+        answer = result.answer
+        contexts = [r.text for r in result.contexts]
+
+        # Update short-term memory and archive
+        self.config.short_term_memory.add("user", question)
+        self.config.short_term_memory.add("assistant", answer)
+        self._archive_to_medium_term()
+
+        # Extract and store long-term facts
+        if self.config.long_term_memory is not None:
+            facts = self.extractor.extract(question, answer)
+            for fact in facts:
+                self.config.long_term_memory.remember(user_id, fact)
+
+        # Evaluate
+        evaluation = self._evaluate(question, answer, contexts)
+
+        # Store in semantic cache
+        self._store_semantic_cache(
+            user_id=user_id,
+            question=question,
+            answer=answer,
+            contexts=contexts,
+            long_term_facts=result.long_term_facts,
+            evaluation=evaluation,
+        )
+
+        return ChatResponse(
+            answer=answer,
+            contexts=result.contexts,
+            long_term_facts=result.long_term_facts,
+            search_query=result.search_query,
+            evaluation=evaluation,
+        )
+
+    def _try_semantic_cache(
+        self, user_id: str, question: str
+    ) -> ChatResponse | None:
+        """尝试命中语义缓存；命中则更新短期记忆并直接返回。"""
+        if not self.config.semantic_cache:
+            return None
+
+        cached = self.config.semantic_cache.lookup(question, user_id)
+        if cached is None:
+            return None
+
+        self.config.short_term_memory.add("user", question)
+        self.config.short_term_memory.add("assistant", cached["answer"])
+        self._archive_to_medium_term()
+        return ChatResponse(
+            answer=cached["answer"],
+            contexts=[],
+            long_term_facts=cached.get("long_term_facts", []),
+            search_query=question,
+            cache_hit=True,
+            cached_query=cached.get("cached_query"),
+            evaluation=cached.get("evaluation"),
+        )
+
+    def _get_history_messages(self) -> list[dict[str, str]]:
+        """将短期记忆转换为 OpenAI 风格的消息列表。"""
+        messages: list[dict[str, str]] = []
+        for msg in self.config.short_term_memory.get_messages():
+            if msg.role in ("user", "assistant"):
+                messages.append({"role": msg.role, "content": msg.content})
+        return messages

@@ -78,6 +78,22 @@ class Settings(BaseSettings):
         default=0.3,
         description="Default generation temperature",
     )
+    llm_max_retries: int = Field(
+        default=3,
+        description="Max retry attempts for transient LLM failures",
+    )
+    llm_retry_backoff: float = Field(
+        default=2.0,
+        description="Exponential backoff factor for LLM retries",
+    )
+    llm_fallback_models: str = Field(
+        default="",
+        description="Comma-separated fallback model names for LLM degradation",
+    )
+    llm_health_failure_threshold: int = Field(
+        default=3,
+        description="Consecutive failures before a model is marked unhealthy",
+    )
 
     # ------------------------------------------------------------------
     # Agent
@@ -107,6 +123,27 @@ class Settings(BaseSettings):
         default=None,
         description="TTL for semantic cache entries; None means no expiration",
     )
+
+    # ------------------------------------------------------------------
+    # Agentic RAG (P2-1)
+    # ------------------------------------------------------------------
+    agentic_enabled: bool = Field(
+        default=False,
+        description="Enable Agentic RAG with self-correction loop",
+    )
+    agentic_max_iterations: int = Field(
+        default=2,
+        description="Max ReAct / self-correction iterations per turn",
+    )
+    agentic_faithfulness_threshold: float = Field(
+        default=0.5,
+        description="Faithfulness threshold below which to trigger correction",
+    )
+    agentic_use_llm_router: bool = Field(
+        default=False,
+        description="Use LLM-based query routing instead of rule-based routing",
+    )
+
     agent_system_prompt: str = Field(
         default=(
             "你是一个严谨的 RAG 助手。请仅根据提供的参考资料和已知用户信息回答问题，"

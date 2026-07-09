@@ -207,10 +207,10 @@ class PersistentSemanticCache(SemanticCache):
 
 | 优化方向 | 优先级 | 说明 |
 |---|---|---|
-| Semantic Cache | ✅ 已落地 | 语义相似度命中 |
-| Embedding 缓存 | P1 | 收益大，实现简单 |
-| 检索结果缓存 | P1 | 带 TTL，知识库更新时失效 |
-| 持久化 | P2 | 服务重启不丢 |
+| Semantic Cache | ✅ 已落地 | 语义相似度命中，含 context 直接复用 |
+| 检索结果缓存 | P2 | SemanticCache 已覆盖主路径；仅在同 query 不同 prompt 场景需要单独复用检索结果 |
+| 持久化 | P2 | 服务重启缓存不丢 |
 | 统计与监控 | P2 | 命中率、平均相似度 |
 | 知识库版本感知 | P2 | 知识库更新时自动失效 |
+| Embedding 缓存 | P2 | 需完全匹配，单用户场景收益低，多用户/批量入库时才有价值 |
 | 分层缓存 | P3 | 大规模时才需要 |

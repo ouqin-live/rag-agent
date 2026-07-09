@@ -262,9 +262,48 @@ class MockLLMClient(BaseLLMClient):
 
 
 def get_llm_client() -> BaseLLMClient:
-    """Factory that returns an OpenAI-compatible client when credentials are available."""
+    """Factory that returns a resilient LLM client.
+
+    The returned client wraps an OpenAI-compatible client with exponential
+    backoff retry, automatic fallback to backup models, and a final mock
+    fallback when no model is available.
+    """
     try:
-        return OpenAICompatibleClient()
+        client = OpenAICompatibleClient()
     except Exception as exc:
         logger.warning("Failed to create OpenAI-compatible client: %s. Using mock.", exc)
         return MockLLMClient()
+
+    from rag_agent.resilience import ModelHealthState, ResilientLLMClient, RetryConfig
+
+    try:
+        settings = _load_settings_values()
+        # _load_settings_values returns partial settings; use config directly
+        from rag_agent.config import get_settings
+
+        settings = get_settings()
+        fallback_models = [
+            m.strip()
+            for m in (settings.llm_fallback_models or "").split(",")
+            if m.strip()
+        ]
+        retry_config = RetryConfig(
+            max_retries=settings.llm_max_retries,
+            backoff_factor=settings.llm_retry_backoff,
+        )
+        health_state = ModelHealthState(
+            failure_threshold=settings.llm_health_failure_threshold,
+        )
+    except Exception as exc:
+        logger.warning("Failed to load resilience settings: %s. Using defaults.", exc)
+        fallback_models = []
+        retry_config = RetryConfig()
+        health_state = ModelHealthState()
+
+    return ResilientLLMClient(
+        client=client,
+        fallback_models=fallback_models,
+        retry_config=retry_config,
+        health_state=health_state,
+        final_fallback=MockLLMClient(),
+    )

@@ -27,10 +27,18 @@
 │                          │                                   │
 │                          ▼                                   │
 │  ┌──────────────────────────────────────────────────────┐   │
-│  │                  Generation Layer                     │   │
+│  │              Generation Layer                         │   │
 │  │  Prompt = system + long-term memory + retrieved KB   │   │
-│  │           + short-term history + question            │   │
+│  │           + medium-term summary + short-term history │   │
+│  │           + question                                 │   │
 │  │  LLM generate with fallback                         │   │
+│  └──────────────────────────────────────────────────────┘   │
+│                          │                                   │
+│                          ▼                                   │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │              Agentic Layer（可选）                     │   │
+│  │  Query Router → Query Transformer → ReAct Loop       │   │
+│  │  → Tool Invocation → Self-Correction                 │   │
 │  └──────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
                               │
@@ -286,44 +294,51 @@ class Agent:
         ...
 
     def chat(self, user_id: str, question: str) -> ChatResponse:
-        # 1. 长期记忆召回
-        long_term_facts = []
-        if self.config.long_term_memory:
-            long_term_facts = self.config.long_term_memory.recall(user_id, question)
+        # -1. 语义缓存查找
+        cached = self._lookup_semantic_cache(user_id, question)
+        if cached is not None:
+            return cached
 
-        # 2. 知识库检索
-        kb_results = self.config.knowledge_base.search(question)
-        contexts = [r.text for r in kb_results]
+        if self.config.agentic_enabled:
+            # Agentic 模式：路由 → 查询改写 → ReAct 循环
+            result = self._react_loop.run(user_id, question, history)
+            answer = result.answer
+            contexts = [r.text for r in result.contexts]
+        else:
+            # 高级 RAG 模式：查询改写 → 记忆召回 → 知识库检索 → LLM 生成
+            search_query = self.config.query_transformer.transform(question, history)[0]
+            long_term_facts = []
+            if self.config.long_term_memory:
+                long_term_facts = self.config.long_term_memory.recall(user_id, search_query)
+            kb_results = self.config.knowledge_base.hybrid_search(search_query)
+            contexts = [r.text for r in kb_results]
+            messages = build_prompt(
+                system="你是一个严谨的 RAG 助手...",
+                long_term_facts=long_term_facts,
+                medium_term_summary=self.config.medium_term_memory.get_summary(),
+                short_term_history=self.config.short_term_memory.get_messages(),
+                contexts=contexts,
+                question=question,
+            )
+            try:
+                answer = self._llm_generate(messages)
+            except Exception as e:
+                if self.config.fallback_enabled:
+                    answer = self._fallback_generate(question, contexts)
+                else:
+                    raise
 
-        # 3. 组合 prompt
-        messages = build_prompt(
-            system="你是一个严谨的 RAG 助手...",
-            long_term_facts=long_term_facts,
-            short_term_history=self.config.short_term_memory.get_messages(),
-            contexts=contexts,
-            question=question,
-        )
-
-        # 4. LLM 生成，失败则降级
-        try:
-            answer = self._llm_generate(messages)
-        except Exception as e:
-            if self.config.fallback_enabled:
-                answer = self._fallback_generate(question, contexts)
-            else:
-                raise
-
-        # 5. 短期记忆更新
+        # 短期记忆更新
         self.config.short_term_memory.add("user", question)
         self.config.short_term_memory.add("assistant", answer)
 
-        # 6. 长期记忆提取与写入
+        # 长期记忆提取与写入
         if self.config.long_term_memory:
             facts = extract_facts(question, answer)
             for f in facts:
                 self.config.long_term_memory.remember(user_id, f)
 
-        # 7. 自动评估
+        # 自动评估
         eval_result = None
         if self.config.evaluator:
             eval_result = self.config.evaluator.evaluate(question, answer, contexts)
@@ -331,7 +346,7 @@ class Agent:
 
         return ChatResponse(
             answer=answer,
-            contexts=kb_results,
+            contexts=contexts,
             evaluation=eval_result,
         )
 
@@ -444,10 +459,14 @@ Assistant: {answer}
 | 场景 | 行为 |
 |---|---|
 | embedding 模型下载失败 | 使用 `FallbackEmbedding`（字符随机投影） |
-| LLM API 鉴权/网络失败 | 使用模板化 mock 生成，并打印警告 |
+| LLM API 鉴权/网络失败 | `ResilientLLMClient` 指数退避重试 → 切换 fallback 模型 → 最终降级到 `MockLLMClient` |
+| Agentic 中大模型生成失败 | `ReactLoop` 返回基于参考资料/工具结果的兜底回答 |
+| Agentic 中查询改写失败 | 回退到原始问题继续检索 |
+| Agentic 中路由失败 | `LLMQueryRouter` 自动降级到 `RuleBasedRouter` |
 | 向量库文件损坏 | 启动时尝试重建索引，失败则初始化空库 |
 | 评估 LLM 失败 | 使用规则评分兜底，不阻断主流程 |
 | 长期记忆存储失败 | 降级为仅使用短期记忆，主流程继续 |
+| 知识库检索失败 | 捕获异常，降级为空上下文继续生成 |
 
 ## 7. 依赖调整
 
@@ -480,9 +499,16 @@ rag-agent/
 ├── rag_agent/
 │   ├── __init__.py
 │   ├── agent.py                    # Agent 编排
+│   ├── agentic/                    # Agentic RAG：路由、ReAct、工具调用
+│   │   ├── base.py
+│   │   ├── router.py
+│   │   ├── tools.py
+│   │   ├── self_correction.py
+│   │   └── react.py
 │   ├── config.py                   # 配置加载
 │   ├── embedder.py                 # Embedding 封装 + Fallback
 │   ├── llm.py                      # LLM 客户端 + fallback
+│   ├── resilience.py               # 重试、fallback、健康状态机
 │   ├── knowledge/
 │   │   ├── __init__.py
 │   │   ├── base.py                 # Document / Chunk / VectorStore 抽象
@@ -493,8 +519,13 @@ rag-agent/
 │   ├── memory/
 │   │   ├── __init__.py
 │   │   ├── short_term.py           # 短期记忆
+│   │   ├── medium_term.py          # 中期会话摘要
 │   │   ├── long_term.py            # 长期记忆
 │   │   └── extractor.py            # 事实提取
+│   ├── retrieval/                  # 查询改写
+│   │   └── query_transform.py
+│   ├── cache/                      # 语义缓存
+│   │   └── semantic_cache.py
 │   └── evaluation/
 │       ├── __init__.py
 │       ├── base.py                 # 评估抽象
@@ -515,7 +546,8 @@ rag-agent/
 | Phase 2 | 引入记忆模块 | `ShortTermMemory` + `LongTermMemory` |
 | Phase 3 | 引入评估模块 | `Evaluator` + 自研 RAGAS 指标 + 持久化 |
 | Phase 4 | Agent 编排与 CLI | `Agent.chat()` + 配置化 + 离线降级验证 |
-| Phase 5 | 反馈闭环 | 失败案例报告、检索策略调优 |
+| Phase 5 | Agentic RAG 与工具调用 | `rag_agent/agentic/` + 查询路由 + ReAct + 自我修正 |
+| Phase 6 | 反馈闭环 | 失败案例报告、检索策略调优 |
 
 ## 10. 测试策略
 

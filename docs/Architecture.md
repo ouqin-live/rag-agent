@@ -18,7 +18,7 @@ User Query
          ▼
 ┌─────────────────────────────────────────┐
 │   Agent 编排层                           │  ← rag_agent/agent.py
-│  （记忆 → 知识库 → 生成 → 评估）          │
+│  （语义缓存 → 路由 → 检索 → 生成 → 评估）  │
 └────────┬────────────────────────────────┘
          │
     ┌────┴────┬────────────┬────────────┐
@@ -26,6 +26,12 @@ User Query
 ┌───────┐ ┌────────┐  ┌─────────┐  ┌──────────┐
 │ 记忆层 │ │ 知识库层 │  │ 生成层   │  │ 评估层    │
 └───────┘ └────────┘  └─────────┘  └──────────┘
+         │
+         ▼
+┌─────────────────────────────────────────┐
+│   Agentic 层（可选）                     │  ← rag_agent/agentic/
+│  （查询路由 / ReAct / 工具调用）           │
+└─────────────────────────────────────────┘
 ```
 
 ## 2. 各层职责与对应文件
@@ -61,17 +67,43 @@ uv run python -m rag_agent.api
 | `Agent.achat(user_id, question)` | 异步单轮对话 |
 | `Agent.achat_stream(user_id, question)` | 异步流式生成 |
 
-单次对话的完整流程：
+单次对话的完整流程（高级 RAG 模式，默认）：
 
-1. **长期记忆召回**：根据问题检索用户历史事实
-2. **知识库混合检索**：Dense + BM25 + RRF 融合，可选 Cross-Encoder 精排
-3. **Prompt 构建**：系统提示 + 用户事实 + 参考资料 + 中期摘要 + 短期对话历史
-4. **LLM 生成**：优先调用真实 LLM，失败则模板降级
-5. **短期记忆更新**：保留最近 N 轮对话，超限时归档到中期记忆
-6. **事实提取与写入**：从本轮对话提取用户偏好/事实，存入长期记忆
-7. **自动评估**：对回答打分并持久化
+1. **语义缓存查找**：命中则直接返回缓存答案
+2. **查询改写**：`QueryTransformer` 进行指代消解与问题标准化
+3. **长期记忆召回**：根据问题检索用户历史事实
+4. **知识库混合检索**：Dense + BM25 + RRF 融合，可选 Cross-Encoder 精排
+5. **Prompt 构建**：系统提示 + 用户事实 + 参考资料 + 中期摘要 + 短期对话历史
+6. **LLM 生成**：优先调用真实 LLM，失败则模板降级
+7. **短期记忆更新**：保留最近 N 轮对话，超限时归档到中期记忆
+8. **事实提取与写入**：从本轮对话提取用户偏好/事实，存入长期记忆
+9. **自动评估**：对回答打分并持久化
 
-### 2.3 知识库层
+当开启 `AGENTIC_ENABLED=true` 时，步骤 2~6 替换为 Agentic 流程：
+
+1. **查询路由**：`QueryRouter` 决定使用知识库、长期记忆、计算器、时间工具等
+2. **查询改写**：`QueryTransformer` 进行指代消解与问题标准化
+3. **ReAct 循环**：检索 → 生成 → 反思 →（修正并再次检索），最多迭代 `AGENTIC_MAX_ITERATIONS` 次
+4. **工具调用**：根据路由结果调用计算器、时间等工具
+
+Agentic 流程同样复用语义缓存、记忆、事实提取、评估等后处理环节。
+
+### 2.3 Agentic 层
+
+**文件**：`rag_agent/agentic/`
+
+在原有高级 RAG 流程之上提供动态决策与自我修复能力：
+
+| 组件 | 文件 | 职责 |
+|---|---|---|
+| 路由 | `router.py` | `RuleBasedRouter` / `LLMQueryRouter`，选择数据源/工具 |
+| 工具 | `tools.py` | `CalculatorTool` / `DatetimeTool`，可扩展 |
+| 自我修正 | `self_correction.py` | `SelfCorrector`，基于忠实度触发查询重写 |
+| ReAct 循环 | `react.py` | `ReactLoop`，协调路由、检索、生成、反思 |
+
+默认关闭，通过 `AGENTIC_ENABLED=true` 开启。详见 `docs/Agentic_Module.md`。
+
+### 2.4 知识库层
 
 **文件**：`rag_agent/knowledge/*.py`
 
@@ -99,7 +131,7 @@ query
   └──► 可选 Cross-Encoder / Embedding 精排
 ```
 
-### 2.4 记忆层
+### 2.5 记忆层
 
 **文件**：`rag_agent/memory/*.py`
 
@@ -122,7 +154,7 @@ MediumTermMemory（本次会话摘要）
 LongTermMemory（跨会话用户事实/偏好）
 ```
 
-### 2.5 生成层
+### 2.6 生成层
 
 **文件**：`rag_agent/llm.py`
 
@@ -131,7 +163,7 @@ LongTermMemory（跨会话用户事实/偏好）
 - 同步/异步/流式三种生成接口：`generate` / `agenerate` / `agenerate_stream`
 - `Agent._fallback_generate`：模板化兜底回答
 
-### 2.6 评估层
+### 2.7 评估层
 
 **文件**：`rag_agent/evaluation/*.py`
 
@@ -143,7 +175,7 @@ LongTermMemory（跨会话用户事实/偏好）
 | 评估器 | `evaluator.py` | 组合指标与规则，按严重程度加权扣分，SQLite 持久化 |
 | 报告 | `report.py` | 失败案例文本报告与 CSV 导出 |
 
-### 2.7 Embedding 层
+### 2.8 Embedding 层
 
 **文件**：`rag_agent/embedder.py`
 
@@ -152,7 +184,7 @@ LongTermMemory（跨会话用户事实/偏好）
 - **关键设计**：fallback 维度自动与真实模型维度对齐，避免维度不一致崩溃
 - 支持异步编码 `aencode()`，通过线程池执行
 
-### 2.8 配置层
+### 2.9 配置层
 
 **文件**：`rag_agent/config.py`
 
@@ -181,18 +213,29 @@ u1 的问题
    ├──► SemanticCache.lookup("u1", "RAG 是什么？")
    │      └── 命中则直接返回缓存答案，跳过后续所有步骤
    │
-   ├──► QueryTransformer.rewrite("RAG 是什么？", history)
-   │      └── 返回改写后的检索 query（指代消解、口语化改写）
+   ├──► 若 AGENTIC_ENABLED=true：
+   │      ├──► QueryRouter.route("RAG 是什么？", history)
+   │      │      └── 返回 ["knowledge_base"]（或 calculator/datetime 等）
+   │      │
+   │      ├──► QueryTransformer.rewrite("RAG 是什么？", history)
+   │      │      └── 返回改写后的检索 query
+   │      │
+   │      └──► ReactLoop.run：检索 → 生成 → 反思 →（修正并再次检索）
+   │             └── 返回 answer
    │
-   ├──► LongTermMemory.recall("u1", "RAG 是什么？")
-   │      └── 返回 ["用户偏好中文回答", "用户喜欢简洁解释"]
-   │
-   ├──► KnowledgeBase.hybrid_search("RAG 是什么？")
-   │      └── 返回 Top-K chunks（Dense + BM25 + RRF + 可选精排）
-   │
-   ├──► 构建 Prompt（系统提示 + 用户事实 + 中期摘要 + 参考资料 + 历史）
-   │
-   ├──► LLM.generate(prompt) → answer
+   └──► 否则（高级 RAG 模式）：
+          ├──► QueryTransformer.rewrite("RAG 是什么？", history)
+          │      └── 返回改写后的检索 query（指代消解、口语化改写）
+          │
+          ├──► LongTermMemory.recall("u1", "RAG 是什么？")
+          │      └── 返回 ["用户偏好中文回答", "用户喜欢简洁解释"]
+          │
+          ├──► KnowledgeBase.hybrid_search("RAG 是什么？")
+          │      └── 返回 Top-K chunks（Dense + BM25 + RRF + 可选精排）
+          │
+          ├──► 构建 Prompt（系统提示 + 用户事实 + 中期摘要 + 参考资料 + 历史）
+          │
+          └──► LLM.generate(prompt) → answer
    │
    ├──► ShortTermMemory.add(user, question)
    └──► ShortTermMemory.add(assistant, answer)
@@ -269,7 +312,7 @@ uv run python -m rag_agent.api
 | 语义缓存 | ✅ 已支持 | `SemanticCache`，按意图相似度复用答案，跳过 LLM |
 | 异步与流式 | ✅ 已支持 | `achat` / `achat_stream` |
 | 统一配置管理 | ✅ 已支持 | `rag_agent/config.py` |
+| Agentic RAG / 工具调用 | ✅ 已支持 | ReAct / self-reflection / 查询路由 / 工具调用，见 `docs/Agentic_Module.md` |
 | HyDE / Multi-Query / Step-back | ⏳ 待实现 | 见 `docs/Optimization_Roadmap.md` |
 | 缓存层 | ⏳ 待实现 | embedding / 检索结果 / 响应缓存 |
 | 可观测性 | ⏳ 待实现 | tracing / metrics |
-| Agentic RAG / 工具调用 | ⏳ 待实现 | ReAct / self-reflection / web search |

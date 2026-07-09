@@ -133,10 +133,10 @@
   - 用户隔离：按 `user_id` 分桶，避免记忆泄露
   - 容量控制：每用户最多 100 条，超出淘汰最旧
 - **待实现**：
-  - **Embedding 缓存**：文本 → vector 的 LRU 缓存
-  - **检索结果缓存**：query → retrieval results 的缓存（带 TTL）
   - **LLM 响应缓存**：相同 prompt 直接命中（对确定性问题有效）
   - 持久化：当前为内存缓存，可选 Redis / SQLite 持久化
+  - **Embedding 缓存**：文本 → vector，需完全匹配，多用户场景才明显
+  - **检索结果缓存**：SemanticCache 已含 context 复用，仅特殊场景需要
 - **产出**：新增 `rag_agent/cache/`
 
 #### P1-3 流式生成
@@ -207,6 +207,20 @@
   - `LLM_RETRY_BACKOFF=2.0`
   - `LLM_FALLBACK_MODELS=qwen-turbo,gpt-3.5-turbo`
 - **产出**：扩展 `rag_agent/llm.py`，新增 `rag_agent/resilience.py`
+- **状态**：✅ 已完成
+- **实现摘要**：
+  - 新增 `rag_agent/resilience.py`：提供 `RetryConfig`、`with_retry`、
+    `ModelHealthState`、`ResilientLLMClient`
+  - 指数退避重试：默认 3 次重试，退避因子 2.0（1s → 2s → 4s），
+    自动捕获 `APITimeoutError`、`RateLimitError`、`APIError` 等可重试异常
+  - Fallback 模型切换：`get_llm_client()` 返回 `ResilientLLMClient`，
+    主模型失败后依次尝试 `LLM_FALLBACK_MODELS` 中配置的备用模型，
+    最终降级到 `MockLLMClient`
+  - 健康状态机：`ModelHealthState` 记录每个模型的连续失败次数，
+    超过 `LLM_HEALTH_FAILURE_THRESHOLD` 后自动跳过该模型；成功后重置计数
+  - 检索容错：`Agent.chat/achat/achat_stream` 中 `hybrid_search` 失败时被捕获，
+    降级为空上下文继续生成，避免单点失败中断主流程
+  - 配置项已加入 `rag_agent/config.py` 和 `.env.example`
 
 ---
 
@@ -225,6 +239,29 @@
     - 例如：Faithfulness 分数低 → 重新检索更相关的上下文
   - **查询路由**：根据问题类型选择 KB、长期记忆、Web Search、计算器等
 - **产出**：新增 `rag_agent/agentic/` 模块
+- **状态**：✅ 已完成（基础能力落地并补齐与原流程的对齐）
+- **实现摘要**：
+  - 新增 `rag_agent/agentic/` 模块：
+    - `base.py`：定义 `AgenticContext`、`BaseTool`、`ToolResult`
+    - `router.py`：规则路由 `RuleBasedRouter` + LLM 路由 `LLMQueryRouter`，
+      支持自动选择 `knowledge_base`、`long_term_memory`、`calculator`、`datetime`
+    - `tools.py`：内置安全计算器 `CalculatorTool`、时间工具 `DatetimeTool`
+    - `self_correction.py`：基于 `FaithfulnessMetric` 的 `SelfCorrector`，
+      分数低于阈值时自动重写查询并补充检索；
+      优先复用 `Evaluator` 中名为 `faithfulness` 的指标，保证与最终评估标准一致
+    - `react.py`：`ReactLoop` 实现 路由 → 查询改写 → 检索 → 生成 → 反思 → 修正 循环
+  - `Agent` 支持 `agentic_enabled` 模式：启用后走 ReAct / Self-Correction 流程；
+    未启用时保持原有高级 RAG 流程不变
+  - 与原高级 RAG 流程对齐：
+    - Agentic 流程前置语义缓存命中，避免重复执行 ReAct 循环
+    - `QueryTransformer` 传入原始 `Message` 列表，支持 `RewritingTransformer` 指代消解
+    - Prompt 中注入中期记忆摘要
+    - 大模型生成失败时返回基于参考资料/工具结果的兜底回答
+    - `achat_stream` 支持 Agentic 模式（执行 ReAct 后模拟流式输出）
+  - 新增模块文档 `docs/Agentic_Module.md`
+  - 配置项已加入 `rag_agent/config.py` 和 `.env.example`：
+    `AGENTIC_ENABLED`、`AGENTIC_MAX_ITERATIONS`、
+    `AGENTIC_FAITHFULNESS_THRESHOLD`、`AGENTIC_USE_LLM_ROUTER`
 
 #### P2-2 工具调用生态
 
