@@ -120,6 +120,7 @@ EVAL_FAILURE_THRESHOLD=0.6
 - [评估模块](docs/Evaluation_Module.md)
 - [检索增强模块](docs/Retrieval_Module.md)
 - [缓存模块](docs/Cache_Module.md)
+- [安全护栏模块](docs/Guardrails_Module.md)
 - [优化路线图](docs/Optimization_Roadmap.md)
 
 ## 技术栈
@@ -182,6 +183,7 @@ OPENAI_MODEL=qwen3.6-plus
 - [整体架构](docs/Architecture.md)
 - [知识库模块](docs/Knowledge_Base.md)
 - [记忆模块](docs/Memory_Module.md)
+- [安全护栏模块](docs/Guardrails_Module.md)
 
 ## 技术栈
 
