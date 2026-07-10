@@ -72,7 +72,36 @@ Agentic 模式默认关闭，通过 `AGENTIC_ENABLED=true` 开启。开启后，
             └──► 若质量不足 → 重写查询 → 再次检索
 ```
 
-### 4.1 反思与自我修正
+### 4.1 详细流程与代码对应
+
+`ReactLoop.run()`（`rag_agent/agentic/react.py`）的循环体与代码位置对应如下：
+
+| 步骤 | 代码位置 | 说明 |
+|---|---|---|
+| 路由 | L114-L117 | `QueryRouter` 决定使用哪些数据源/工具 |
+| 查询改写 | L119-L130 | `QueryTransformer` 改写原始问题；失败则回退到原问题 |
+| 检索证据 | L136-L138 → `_retrieve` | 从知识库、长期记忆、工具中收集证据 |
+| 生成答案 | L140-L141 → `_generate_answer` | LLM 基于证据生成答案；失败则返回兜底回答 |
+| 反思 | L143-L147 → `SelfCorrector.check` | 评估答案 Faithfulness |
+| 修正 | L153-L157 | 若未通过，使用重写后的查询并清空证据，进入下一轮 |
+
+`search_query` 在每次修正后可能被 `SelfCorrector` 重写，因此循环内的检索 query 是动态变化的。
+
+### 4.2 与主流 ReAct 的区别
+
+本实现是**面向生产环境的简化版 ReAct**，保留了“检索 → 生成 → 反思 → 行动”的核心思想，但与学术定义和主流框架（如 LangChain ReAct Agent、LlamaIndex ReActAgent）存在差异：
+
+| 维度 | 原始 ReAct / 主流框架 | 本项目实现 |
+|---|---|---|
+| 控制流 | LLM 通过 `Thought/Action/Observation` 文本轨迹决定下一步 | 循环结构由代码硬编码，LLM 只负责生成答案 |
+| 反思方式 | LLM 自己输出反思结论 | 独立的 `SelfCorrector` 基于 Faithfulness 指标评估 |
+| 动作空间 | 通用工具调用（搜索、计算、API 等） | 当前内置 `calculator`、`datetime`，按路由结果调用 |
+| 停止条件 | LLM 输出 `Finish` 或达到最大步数 | 达到忠实度阈值或最大迭代次数 |
+| 适用场景 | 探索性、多跳推理 | 结构化 RAG 问答，强调可控与兜底 |
+
+这种设计牺牲了一定的 agent 自主性，但换来了更高的可控性、更低的 token 消耗和更稳定的生产表现。
+
+### 4.3 反思与自我修正
 
 `SelfCorrector` 使用 **Faithfulness（忠实度）** 指标评估答案：
 
@@ -81,7 +110,7 @@ Agentic 模式默认关闭，通过 `AGENTIC_ENABLED=true` 开启。开启后，
 
 `SelfCorrector` 会优先复用 `Evaluator` 中名为 `faithfulness` 的指标，保证自我修正与最终评估的尺子一致。
 
-### 4.2 工具调用
+### 4.4 工具调用
 
 当前内置工具：
 

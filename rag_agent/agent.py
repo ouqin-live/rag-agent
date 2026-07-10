@@ -18,6 +18,7 @@ from rag_agent.config import get_settings
 from rag_agent.embedder import get_embedder
 from rag_agent.evaluation import Evaluator
 from rag_agent.evaluation.base import EvaluationResult
+from rag_agent.guardrails import Guardrails, GuardrailsConfig
 from rag_agent.knowledge import KnowledgeBase, RetrievalResult
 from rag_agent.llm import BaseLLMClient, MockLLMClient
 from rag_agent.memory import (
@@ -95,6 +96,8 @@ class AgentConfig:
     router: QueryRouter | None = None
     tools: dict[str, BaseTool] | None = None
     self_corrector: SelfCorrector | None = None
+    # Guardrails (P2-3)
+    guardrails: Guardrails | None = None
 
 
 class Agent:
@@ -116,6 +119,8 @@ class Agent:
         self.extractor = LLMMemoryExtractor(self.config.llm_client)
         # 默认初始化 agentic 组件
         self._init_agentic()
+        # 默认初始化护栏
+        self._init_guardrails()
 
     def _init_agentic(self) -> None:
         """Initialize the ReAct loop when agentic mode is enabled."""
@@ -154,6 +159,26 @@ class Agent:
             temperature=settings.llm_temperature,
         )
 
+    def _init_guardrails(self) -> None:
+        """初始化安全护栏。"""
+        if self.config.guardrails is not None:
+            self._guardrails = self.config.guardrails
+            return
+        settings = get_settings()
+        gc = GuardrailsConfig(
+            enabled=settings.guardrails_enabled,
+            prompt_injection_enabled=settings.guardrails_prompt_injection_enabled,
+            prompt_injection_hard_block=settings.guardrails_prompt_injection_hard_block,
+            pii_detection_enabled=settings.guardrails_pii_enabled,
+            pii_hard_block=settings.guardrails_pii_hard_block,
+            output_toxicity_enabled=settings.guardrails_output_toxicity_enabled,
+            output_toxicity_hard_block=settings.guardrails_output_toxicity_hard_block,
+            confidence_check_enabled=settings.guardrails_confidence_enabled,
+            confidence_threshold=settings.guardrails_confidence_threshold,
+            raise_on_block=settings.guardrails_raise_on_block,
+        )
+        self._guardrails = Guardrails(gc)
+
     def chat(self, user_id: str, question: str) -> ChatResponse:
         """Run a full question-answering turn (synchronous)."""
         if self.config.agentic_enabled and self._react_loop is not None:
@@ -188,6 +213,11 @@ class Agent:
     # Internal turn logic
     # ------------------------------------------------------------------
     def _run_turn(self, user_id: str, question: str, sync: bool) -> ChatResponse:
+        # 输入护栏检查
+        blocked = self._check_input_guardrails(user_id, question)
+        if blocked is not None:
+            return blocked
+
         # -1. 优先命中语义缓存
         cached = self._try_semantic_cache(user_id, question)
         if cached is not None:
@@ -217,6 +247,9 @@ class Agent:
             logger.warning("Knowledge base retrieval failed: %s", exc)
         contexts = [r.text for r in kb_results]
 
+        # 检索置信度检查
+        self._check_confidence_guardrails(contexts, kb_results)
+
         # 3. Build prompt
         messages = self._build_messages(
             question=question,
@@ -233,6 +266,11 @@ class Agent:
                 answer = self._fallback_generate(question, contexts)
             else:
                 raise
+
+        # 输出护栏审核
+        safe_answer = self._check_output_guardrails(answer)
+        if safe_answer is not None:
+            answer = safe_answer
 
         # 5. Update short-term memory and archive
         self.config.short_term_memory.add("user", question)
@@ -267,6 +305,11 @@ class Agent:
         )
 
     async def _run_turn_async(self, user_id: str, question: str) -> ChatResponse:
+        # 输入护栏检查
+        blocked = self._check_input_guardrails(user_id, question)
+        if blocked is not None:
+            return blocked
+
         # -1. 优先命中语义缓存
         cached = self._try_semantic_cache(user_id, question)
         if cached is not None:
@@ -296,6 +339,9 @@ class Agent:
             logger.warning("Knowledge base retrieval failed: %s", exc)
         contexts = [r.text for r in kb_results]
 
+        # 检索置信度检查
+        self._check_confidence_guardrails(contexts, kb_results)
+
         # 3. Build prompt
         messages = self._build_messages(
             question=question,
@@ -312,6 +358,11 @@ class Agent:
                 answer = self._fallback_generate(question, contexts)
             else:
                 raise
+
+        # 输出护栏审核
+        safe_answer = self._check_output_guardrails(answer)
+        if safe_answer is not None:
+            answer = safe_answer
 
         # 5. Update short-term memory and archive
         self.config.short_term_memory.add("user", question)
@@ -355,6 +406,12 @@ class Agent:
         Yields answer chunks (strings). Short-term memory and evaluation are
         updated after the full answer has been produced.
         """
+        # 输入护栏检查
+        blocked = self._check_input_guardrails(user_id, question)
+        if blocked is not None:
+            yield blocked.answer
+            return
+
         # -1. 优先命中语义缓存
         cached = self._lookup_semantic_cache(user_id, question)
         if cached is not None:
@@ -372,6 +429,12 @@ class Agent:
             )
             answer = result.answer
             contexts = [r.text for r in result.contexts]
+
+            # 输出护栏审核
+            safe_answer = self._check_output_guardrails(answer)
+            if safe_answer is not None:
+                answer = safe_answer
+
             yield answer
 
             # 本轮后处理：记忆、事实提取、评估、缓存
@@ -396,7 +459,7 @@ class Agent:
             )
             return
 
-        # 0. Query transformation before retrieval
+        #  0. Query transformation before retrieval
         search_queries = await self.config.query_transformer.atransform(
             question, self.config.short_term_memory.get_messages()
         )
@@ -417,6 +480,9 @@ class Agent:
         except Exception as exc:
             logger.warning("Knowledge base retrieval failed: %s", exc)
         contexts = [r.text for r in kb_results]
+
+        # 检索置信度检查
+        self._check_confidence_guardrails(contexts, kb_results)
 
         messages = self._build_messages(
             question=question,
@@ -439,6 +505,11 @@ class Agent:
                 yield fallback
             else:
                 raise
+
+        # 输出护栏审核（流式全部接收后检查）
+        safe_answer = self._check_output_guardrails(full_answer)
+        if safe_answer is not None:
+            full_answer = safe_answer
 
         # Post-turn bookkeeping after streaming completes
         self.config.short_term_memory.add("user", question)
@@ -580,12 +651,65 @@ class Agent:
         return "当前无法生成回答，请稍后再试。"
 
     # ------------------------------------------------------------------
+    # Guardrails helpers (P2-3)
+    # ------------------------------------------------------------------
+
+    def _check_input_guardrails(
+        self, user_id: str, question: str
+    ) -> ChatResponse | None:
+        """执行输入护栏检查。被硬拦截时返回安全兜底 ChatResponse。
+
+        返回 None 表示通过，允许继续处理。
+        """
+        result = self._guardrails.check_input(question)
+        if not result.blocked:
+            return None
+
+        logger.warning(
+            "输入护栏拦截 user=%s blocked_by=%s", user_id, result.blocked_by
+        )
+        safe_answer = "抱歉，您的请求包含不安全内容，无法处理。"
+        self.config.short_term_memory.add("user", question)
+        self.config.short_term_memory.add("assistant", safe_answer)
+        self._archive_to_medium_term()
+        return ChatResponse(
+            answer=safe_answer,
+            search_query=question,
+        )
+
+    def _check_output_guardrails(self, answer: str) -> str | None:
+        """对 LLM 输出执行毒性审核。被硬拦截时返回安全兜底文本。
+
+        返回 None 表示通过，返回字符串表示替换后的安全回答。
+        """
+        result = self._guardrails.check_output(answer)
+        if not result.blocked:
+            return None
+
+        logger.warning("输出护栏拦截 output_toxicity")
+        return "抱歉，生成的回答包含不当内容，已被替换。"
+
+    def _check_confidence_guardrails(
+        self, contexts: list[str], retrieval_results: list[RetrievalResult]
+    ) -> None:
+        """检查检索置信度并在过低时记录警告。"""
+        scores = [r.score for r in retrieval_results if hasattr(r, 'score')]
+        result = self._guardrails.check_retrieval(contexts, scores if scores else None)
+        if result.action.value == "warn":
+            logger.warning("检索置信度警告: %s", result.message)
+
+    # ------------------------------------------------------------------
     # Agentic RAG turn logic (P2-1)
     # ------------------------------------------------------------------
 
     def _run_agentic_turn(self, user_id: str, question: str) -> ChatResponse:
         """同步执行一轮 ReAct / 自我修正。"""
         assert self._react_loop is not None
+
+        # 输入护栏检查
+        blocked = self._check_input_guardrails(user_id, question)
+        if blocked is not None:
+            return blocked
 
         # 优先命中语义缓存，避免重复执行 ReAct 循环
         cached = self._try_semantic_cache(user_id, question)
@@ -603,6 +727,11 @@ class Agent:
         """异步执行一轮 ReAct / 自我修正。"""
         assert self._react_loop is not None
 
+        # 输入护栏检查
+        blocked = self._check_input_guardrails(user_id, question)
+        if blocked is not None:
+            return blocked
+
         # 优先命中语义缓存，避免重复执行 ReAct 循环
         cached = self._try_semantic_cache(user_id, question)
         if cached is not None:
@@ -619,6 +748,11 @@ class Agent:
         """Post-process an agentic turn: memory, evaluation, cache."""
         answer = result.answer
         contexts = [r.text for r in result.contexts]
+
+        # 输出护栏审核
+        safe_answer = self._check_output_guardrails(answer)
+        if safe_answer is not None:
+            answer = safe_answer
 
         # Update short-term memory and archive
         self.config.short_term_memory.add("user", question)

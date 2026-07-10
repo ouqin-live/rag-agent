@@ -276,12 +276,29 @@
 #### P2-3 更强的安全与护栏
 
 - **目标**：降低 prompt injection、PII 泄露、有害内容风险
+- **状态**：✅ 已完成
+- **实现摘要**：
+  - 新增 `rag_agent/guardrails.py`：
+    - `GuardrailsConfig` / `Guardrails`：统一的护栏入口，支持独立开关与硬拦截/警告两档
+    - **Prompt Injection 检测**：14 组正则模式（指令覆盖、角色越狱、提示泄露、分隔符攻击等），
+      高风险模式（直接指令覆盖/提示泄露/分隔符）支持硬拦截
+    - **PII 检测与脱敏**：身份证号、手机号、邮箱、信用卡号、IP 地址的检测与 `mask()` 脱敏替换
+    - **输出毒性审核**：暴力/色情/仇恨/自残/非法活动 5 类敏感词检测
+    - **检索置信度门控**：所有检索片分数低于阈值时主动记录警告
+  - `Agent` 全路径接入：
+    - 每轮对话前执行输入护栏（prompt injection + PII），硬拦截时返回安全兜底回答
+    - LLM 生成后执行输出护栏（毒性审核），硬拦截时替换为安全回答
+    - 每次检索后执行置信度检查，过低时记录日志
+    - 覆盖同步/异步/流式/Agentic 全部 6 个 turn 路径
+  - 配置项已加入 `rag_agent/config.py` 和 `.env.example`：
+    `GUARDRAILS_ENABLED`、`GUARDRAILS_PROMPT_INJECTION_*`、`GUARDRAILS_PII_*`、
+    `GUARDRAILS_OUTPUT_TOXICITY_*`、`GUARDRAILS_CONFIDENCE_*`
 - **内容**：
-  - Prompt Injection 检测（轻量分类器或规则）
-  - PII 检测与脱敏
-  - 输出毒性/敏感内容审核
-  - 检索置信度过低时主动拒绝回答
-- **产出**：扩展 `rag_agent/evaluation/rules.py` 或新增 `rag_agent/guardrails.py`
+  - ~~Prompt Injection 检测（轻量分类器或规则）~~
+  - ~~PII 检测与脱敏~~
+  - ~~输出毒性/敏感内容审核~~
+  - ~~检索置信度过低时主动拒绝回答~~
+- **产出**：新增 `rag_agent/guardrails.py`
 
 #### P2-4 记忆系统进阶
 

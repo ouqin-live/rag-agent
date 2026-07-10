@@ -144,6 +144,50 @@ class Settings(BaseSettings):
         description="Use LLM-based query routing instead of rule-based routing",
     )
 
+    # ------------------------------------------------------------------
+    # Guardrails (P2-3)
+    # ------------------------------------------------------------------
+    guardrails_enabled: bool = Field(
+        default=True,
+        description="Enable safety guardrails for input and output",
+    )
+    guardrails_prompt_injection_enabled: bool = Field(
+        default=True,
+        description="Detect prompt injection patterns in user input",
+    )
+    guardrails_prompt_injection_hard_block: bool = Field(
+        default=False,
+        description="Block requests with high-risk injection patterns",
+    )
+    guardrails_pii_enabled: bool = Field(
+        default=True,
+        description="Detect PII (phone, email, ID card, etc.) in user input",
+    )
+    guardrails_pii_hard_block: bool = Field(
+        default=False,
+        description="Block requests containing high-risk PII",
+    )
+    guardrails_output_toxicity_enabled: bool = Field(
+        default=True,
+        description="Detect toxic/harmful content in LLM output",
+    )
+    guardrails_output_toxicity_hard_block: bool = Field(
+        default=False,
+        description="Block toxic/harmful output responses",
+    )
+    guardrails_confidence_enabled: bool = Field(
+        default=True,
+        description="Warn when retrieval confidence is too low",
+    )
+    guardrails_confidence_threshold: float = Field(
+        default=0.3,
+        description="Retrieval confidence threshold below which to warn",
+    )
+    guardrails_raise_on_block: bool = Field(
+        default=False,
+        description="Raise exception when a guardrail hard-blocks (else return safe fallback)",
+    )
+
     agent_system_prompt: str = Field(
         default=(
             "你是一个严谨的 RAG 助手。请仅根据提供的参考资料和已知用户信息回答问题，"

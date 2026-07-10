@@ -90,12 +90,16 @@ class ChromaVectorStore(VectorStore):
         query_vec = _to_embedding(query_embedding)
         where_filter = _build_where(filters) if filters else None
 
-        results = self._collection.query(
-            query_embeddings=[query_vec],
-            n_results=min(top_k, raw_count),
-            where=where_filter,
-            include=["metadatas", "documents", "embeddings", "distances"],
-        )
+        try:
+            results = self._collection.query(
+                query_embeddings=[query_vec],
+                n_results=min(top_k, raw_count),
+                where=where_filter,
+                include=["metadatas", "documents", "embeddings", "distances"],
+            )
+        except Exception as exc:
+            logger.warning("Chroma query failed (collection may be inconsistent): %s", exc)
+            return []
 
         retrieved: list[RetrievalResult] = []
         ids = results.get("ids", [[]])[0]
