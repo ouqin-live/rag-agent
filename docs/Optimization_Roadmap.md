@@ -27,7 +27,7 @@
 - 缺少统一配置管理，大量阈值硬编码
 - Python 版本要求 `>=3.14`，限制采用
 - 无缓存、无可观测、无用户反馈闭环
-- 缺少 Query 改写、Agentic 检索、工具调用等进阶能力
+- Query 改写、Agentic 检索、基础工具调用、安全护栏已落地；Web Search、OCR、多模态文档解析等进阶能力仍待实现
 
 ---
 
@@ -266,12 +266,19 @@
 #### P2-2 工具调用生态
 
 - **目标**：让 Agent 不局限于知识库，可调用外部工具
-- **候选工具**：
+- **状态**：✅ 已完成（基础工具落地）
+- **实现摘要**：
+  - 新增 `BaseTool` / `ToolResult` 抽象接口（`rag_agent/agentic/base.py`）
+  - 内置安全工具：
+    - `CalculatorTool`：基于 AST 的白名单算术表达式求值
+    - `DatetimeTool`：返回当前日期时间
+  - `ReactLoop` 通过 `QueryRouter` 自动决定何时调用工具
+  - 外部工具可扩展：实现 `BaseTool` 后传入 `AgentConfig.tools` 即可注册
+- **候选扩展工具**：
   - Web Search（Serper / DuckDuckGo）
-  - 计算器 / Python 代码执行器
-  - 日期/时间工具
   - 企业 API 查询工具
-- **产出**：定义 `BaseTool` 接口，支持 OpenAI function calling 格式
+  - Python 代码执行器（需注意沙箱安全）
+- **产出**：定义 `BaseTool` 接口，支持自定义工具注册
 
 #### P2-3 更强的安全与护栏
 
@@ -351,7 +358,7 @@
 | **阶段 3：质量与成本** | P1-1 Query 改写 + P1-2 语义缓存 + P1-4 Parent Document | 回答质量与延迟双提升，成本下降 30%+ |
 | **阶段 4：稳定性** | P1-8 容错重试 + Fallback LLM | 生产环境单点失败自愈 |
 | **阶段 5：观测与反馈** | P1-7 Trace 可观测 + P1-6 用户反馈 | 建立持续优化数据基础，可定位幻觉/超时根因 |
-| **阶段 6：Agent 化** | P2-1 Agentic RAG（Self-Correction）+ P2-2 工具调用 | 从 RAG 升级为 Agent |
+| **阶段 6：Agent 化** ✅ 已完成 | P2-1 Agentic RAG（Self-Correction）+ P2-2 工具调用 | 从 RAG 升级为 Agent |
 | **阶段 7：安全与治理** | P2-3 护栏 + P2-5 文档增强 + P2-6 成本配额 | 具备生产级服务能力 |
 
 ---
@@ -404,6 +411,6 @@
 
 完成阶段 7 后，项目应达到：
 
-- [ ] 支持 Agentic 多步检索与 Self-Correction Loop
-- [ ] 支持至少 2 种外部工具
-- [ ] 具备基础 prompt injection 和 PII 检测
+- [x] 支持 Agentic 多步检索与 Self-Correction Loop
+- [x] 支持至少 2 种外部工具
+- [x] 具备基础 prompt injection 和 PII 检测
