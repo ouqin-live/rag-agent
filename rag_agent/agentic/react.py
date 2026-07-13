@@ -253,7 +253,7 @@ class ReactLoop:
             except Exception as exc:
                 logger.warning("Knowledge base retrieval failed: %s", exc)
 
-        for source in ("calculator", "datetime"):
+        for source in ("calculator", "datetime", "web_search"):
             if getattr(route, f"use_{source}", False) and source in self.tools:
                 try:
                     result = self.tools[source].invoke(query)

@@ -266,19 +266,26 @@
 #### P2-2 工具调用生态
 
 - **目标**：让 Agent 不局限于知识库，可调用外部工具
-- **状态**：✅ 已完成（基础工具落地）
+- **状态**：✅ 已完成（基础工具 + Brave Search MCP 落地）
 - **实现摘要**：
   - 新增 `BaseTool` / `ToolResult` 抽象接口（`rag_agent/agentic/base.py`）
   - 内置安全工具：
     - `CalculatorTool`：基于 AST 的白名单算术表达式求值
     - `DatetimeTool`：返回当前日期时间
+  - 新增 MCP 工具桥接：
+    - `McpClient` / `McpServerParams`（`rag_agent/agentic/mcp_client.py`）：
+      通过 stdio 启动外部 MCP server，并同步封装为 `BaseTool` 调用
+    - `WebSearchMcpTool`（`rag_agent/agentic/web_search_tool.py`）：
+      接入官方 Brave Search MCP server，支持实时网页搜索
   - `ReactLoop` 通过 `QueryRouter` 自动决定何时调用工具
   - 外部工具可扩展：实现 `BaseTool` 后传入 `AgentConfig.tools` 即可注册
 - **候选扩展工具**：
-  - Web Search（Serper / DuckDuckGo）
+  - 更多 MCP server：文件系统、GitHub、数据库、浏览器自动化（Playwright）
   - 企业 API 查询工具
   - Python 代码执行器（需注意沙箱安全）
-- **产出**：定义 `BaseTool` 接口，支持自定义工具注册
+- **配置项已加入 `rag_agent/config.py` 和 `.env.example`**：
+  `MCP_WEB_SEARCH_ENABLED`、`BRAVE_API_KEY`、`MCP_SERVER_COMMAND`、`MCP_BRAVE_PACKAGE`
+- **产出**：定义 `BaseTool` 接口，支持自定义工具与 MCP server 注册
 
 #### P2-3 更强的安全与护栏
 

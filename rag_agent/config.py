@@ -145,6 +145,26 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------
+    # MCP Tools (P2-2 extension)
+    # ------------------------------------------------------------------
+    mcp_web_search_enabled: bool = Field(
+        default=False,
+        description="Enable the Brave Search MCP tool for real-time web search",
+    )
+    brave_api_key: str | None = Field(
+        default=None,
+        description="API key for the Brave Search MCP server",
+    )
+    mcp_server_command: str = Field(
+        default="npx",
+        description="Command used to launch MCP servers (e.g. npx, uvx)",
+    )
+    mcp_brave_package: str = Field(
+        default="@modelcontextprotocol/server-brave-search",
+        description="NPM package name of the Brave Search MCP server",
+    )
+
+    # ------------------------------------------------------------------
     # Guardrails (P2-3)
     # ------------------------------------------------------------------
     guardrails_enabled: bool = Field(

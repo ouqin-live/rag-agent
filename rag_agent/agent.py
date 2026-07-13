@@ -12,6 +12,7 @@ from rag_agent.agentic import (
     ReactLoop,
     RuleBasedRouter,
     SelfCorrector,
+    WebSearchMcpTool,
 )
 from rag_agent.cache import SemanticCache
 from rag_agent.config import get_settings
@@ -142,6 +143,14 @@ class Agent:
             max_iterations=settings.agentic_max_iterations,
         )
 
+        tools = dict(self.config.tools or {})
+        if settings.mcp_web_search_enabled and "web_search" not in tools:
+            tools["web_search"] = WebSearchMcpTool(
+                api_key=settings.brave_api_key,
+                server_command=settings.mcp_server_command,
+                server_package=settings.mcp_brave_package,
+            )
+
         self._react_loop = ReactLoop(
             llm_client=self.config.llm_client,
             knowledge_base=self.config.knowledge_base,
@@ -152,7 +161,7 @@ class Agent:
             self_corrector=self_corrector,
             query_transformer=self.config.query_transformer,
             evaluator=self.config.evaluator,
-            tools=self.config.tools or {},
+            tools=tools,
             system_prompt=self.config.system_prompt,
             max_iterations=settings.agentic_max_iterations,
             top_k=settings.agent_top_k,

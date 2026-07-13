@@ -82,6 +82,21 @@ class RuleBasedRouter(QueryRouter):
         "我叫",
         "我是",
     )
+    _WEB_SEARCH_KEYWORDS = (
+        "最新",
+        "新闻",
+        "实时",
+        "网上",
+        "搜索一下",
+        "查一下",
+        "google",
+        "百度",
+        "twitter",
+        "github",
+        "股价",
+        "股票",
+        "天气",
+    )
 
     def route(
         self,
@@ -107,7 +122,15 @@ class RuleBasedRouter(QueryRouter):
                 reasoning="Question asks for current time or date.",
             )
 
-        # 3. Personal facts: prefer long-term memory, optionally KB
+        # 3. Web search: real-time / external information
+        if any(k in lower for k in self._WEB_SEARCH_KEYWORDS):
+            return RouteDecision(
+                use_web_search=True,
+                use_knowledge_base=True,
+                reasoning="Question asks for real-time or external information.",
+            )
+
+        # 4. Personal facts: prefer long-term memory, optionally KB
         if any(k in q for k in self._PERSONAL_KEYWORDS):
             return RouteDecision(
                 use_long_term_memory=True,
@@ -115,7 +138,7 @@ class RuleBasedRouter(QueryRouter):
                 reasoning="Question refers to personal preferences or history.",
             )
 
-        # 4. Default: knowledge base
+        # 5. Default: knowledge base
         return RouteDecision(
             use_knowledge_base=True,
             reasoning="Default route to knowledge base.",
@@ -140,7 +163,7 @@ Available sources:
 - long_term_memory: personal facts about the user
 - calculator: arithmetic / math questions
 - datetime: current time or date
-- web_search: real-time information (not implemented yet, keep False)
+- web_search: real-time information from the public web
 
 Return ONLY a JSON object in this exact format:
 {
