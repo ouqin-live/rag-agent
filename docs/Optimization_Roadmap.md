@@ -37,13 +37,26 @@
 
 这些项决定项目能否从“脚本”变成“可维护、可部署的系统”。
 
-#### P0-1 建立测试体系 ⏳ 待实现
+#### P0-1 建立测试体系 ✅ 已实现
 
 - **目标**：为所有核心模块补单元测试和集成测试
-- **范围**：
-  - 单元测试：`chunker`、`LocalVectorStore`、`ChromaVectorStore`、`LongTermMemory` 去重、`Evaluator` 打分
-  - 集成测试：完整 `Agent.chat()` 链路，覆盖真实 LLM / Mock 降级 / 离线模式
-  - 回归测试：同文档增量更新、跨会话长期记忆召回
+- **状态**：✅ 已实现（基础覆盖）
+- **实现摘要**：
+  - 新增 `tests/` 目录，使用 `pytest` + `pytest-asyncio`
+  - 单元测试覆盖：
+    - `tests/test_chunker.py`：`FixedSizeChunker` / `RecursiveChunker` 切分、空文档、overlap 校验、中文句子
+    - `tests/test_vector_store.py`：`LocalVectorStore` 的增删查、持久化、元数据过滤
+    - `tests/test_long_term_memory.py`：记忆存储/召回、去重、用户隔离、容量限制
+    - `tests/test_evaluator.py`：`DefaultRuleChecker` 规则检查、`Evaluator` 持久化
+  - 集成测试覆盖：
+    - `tests/test_agent_integration.py`：完整 `Agent.chat()` / `Agent.achat()` 链路，使用 `MockLLMClient` 离线运行
+    - Agentic 模式 + `CalculatorTool` 的工具调用链路
+  - 测试使用 `MockEmbedder` / `FactEmbedder` 和临时目录，无需下载模型或调用外部服务
+- **运行方式**：`uv run pytest tests/`
+- **待扩展**：
+  - `ChromaVectorStore` 专项测试
+  - 同文档增量更新回归测试
+  - 跨会话长期记忆召回回归测试
 - **产出**：新增 `tests/` 目录，`pytest` 可一键运行
 
 #### P0-2 提供服务化接口 ✅ 已实现

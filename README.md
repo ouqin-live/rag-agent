@@ -26,6 +26,16 @@ cp .env.example .env
 uv run python main.py
 ```
 
+## 运行测试
+
+```bash
+# 安装 dev 依赖并运行全部测试
+uv sync --group dev
+uv run pytest tests/ -v
+```
+
+测试使用 `MockLLMClient` 和内存/临时向量库，无需配置真实 LLM 即可离线运行。
+
 ## 启动 API 服务
 
 ```bash
