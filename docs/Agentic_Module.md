@@ -29,8 +29,6 @@ Agentic 模式默认关闭，通过 `AGENTIC_ENABLED=true` 开启。开启后，
 | `router.py` | `LLMQueryRouter` | 基于 LLM JSON 输出的路由，失败自动降级 |
 | `tools.py` | `CalculatorTool` | 安全算术表达式计算 |
 | `tools.py` | `DatetimeTool` | 返回当前时间 |
-| `web_search_tool.py` | `WebSearchMcpTool` | 基于 Brave Search MCP 的网页搜索 |
-| `mcp_client.py` | `McpClient` / `McpServerParams` | 同步封装外部 MCP server |
 | `self_correction.py` | `SelfCorrector` | 基于忠实度等指标判断是否修正，并重写查询 |
 | `react.py` | `ReactLoop` | ReAct 循环协调器 |
 | `react.py` | `ReactResult` | 循环最终结果 |
@@ -45,7 +43,6 @@ Agentic 模式默认关闭，通过 `AGENTIC_ENABLED=true` 开启。开启后，
 |---|---|---|
 | 数学计算 | `1 + 2 等于多少` | `calculator` |
 | 当前时间/日期 | `现在几点` | `datetime` |
-| 实时/外部信息 | `今天有什么新闻` | `web_search` + `knowledge_base` |
 | 个人偏好/历史 | `我喜欢的颜色是什么` | `long_term_memory` + `knowledge_base` |
 | 一般知识 | `什么是 RAG` | `knowledge_base` |
 
@@ -98,7 +95,7 @@ Agentic 模式默认关闭，通过 `AGENTIC_ENABLED=true` 开启。开启后，
 |---|---|---|
 | 控制流 | LLM 通过 `Thought/Action/Observation` 文本轨迹决定下一步 | 循环结构由代码硬编码，LLM 只负责生成答案 |
 | 反思方式 | LLM 自己输出反思结论 | 独立的 `SelfCorrector` 基于 Faithfulness 指标评估 |
-| 动作空间 | 通用工具调用（搜索、计算、API 等） | 当前内置 `calculator`、`datetime`、`web_search`，按路由结果调用 |
+| 动作空间 | 通用工具调用（搜索、计算、API 等） | 当前内置 `calculator`、`datetime`，按路由结果调用 |
 | 停止条件 | LLM 输出 `Finish` 或达到最大步数 | 达到忠实度阈值或最大迭代次数 |
 | 适用场景 | 探索性、多跳推理 | 结构化 RAG 问答，强调可控与兜底 |
 
@@ -119,29 +116,8 @@ Agentic 模式默认关闭，通过 `AGENTIC_ENABLED=true` 开启。开启后，
 
 - `CalculatorTool`：基于 AST 安全计算算术表达式
 - `DatetimeTool`：返回当前日期时间
-- `WebSearchMcpTool`：通过 Brave Search MCP server 搜索网页
 
-工具接口为 `BaseTool`，后续可通过 `AgentConfig.tools` 字典扩展更多 MCP 工具或自定义工具。
-
-### 4.4.1 Web Search MCP 工具
-
-`WebSearchMcpTool` 使用官方 Brave Search MCP server：
-
-```bash
-npx -y @modelcontextprotocol/server-brave-search
-```
-
-启用方式：
-
-```bash
-AGENTIC_ENABLED=true
-MCP_WEB_SEARCH_ENABLED=true
-BRAVE_API_KEY=your_brave_api_key_here
-```
-
-当 `RuleBasedRouter` 检测到"最新""新闻""实时""天气""股价"等关键词时，会自动调用 `web_search`，搜索结果会作为 `[工具结果]` 注入 LLM 的 system prompt。
-
-> 需要先申请 Brave Search API Key：https://api.search.brave.com/app/keys
+工具接口为 `BaseTool`，后续可通过 `AgentConfig.tools` 字典扩展 Web Search、代码执行器等。
 
 ---
 
@@ -180,10 +156,6 @@ Agentic 流程完整复用了原有流程的以下能力：
 | 最大迭代次数 | `AGENTIC_MAX_ITERATIONS` | `2` | ReAct / 自我修正最大轮数 |
 | 忠实度阈值 | `AGENTIC_FAITHFULNESS_THRESHOLD` | `0.5` | 低于该阈值触发修正 |
 | 使用 LLM 路由 | `AGENTIC_USE_LLM_ROUTER` | `false` | 是否使用 LLM 做查询路由 |
-| 启用 Web Search MCP | `MCP_WEB_SEARCH_ENABLED` | `false` | 是否启用 Brave Search 网页搜索 |
-| Brave API Key | `BRAVE_API_KEY` | `None` | Brave Search API Key |
-| MCP 启动命令 | `MCP_SERVER_COMMAND` | `npx` | 启动 MCP server 的命令 |
-| Brave MCP 包名 | `MCP_BRAVE_PACKAGE` | `@modelcontextprotocol/server-brave-search` | Brave Search MCP 包名 |
 
 ---
 
@@ -196,10 +168,6 @@ AGENTIC_ENABLED=true
 AGENTIC_MAX_ITERATIONS=2
 AGENTIC_FAITHFULNESS_THRESHOLD=0.5
 AGENTIC_USE_LLM_ROUTER=false
-
-# 可选：启用 Web Search MCP
-MCP_WEB_SEARCH_ENABLED=true
-BRAVE_API_KEY=your_brave_api_key_here
 ```
 
 ### 通过代码
@@ -224,8 +192,7 @@ print(response.answer)
 
 | 方向 | 说明 |
 |---|---|
-| Web Search 工具 | ✅ 已接入 Brave Search MCP；可扩展 Serper / DuckDuckGo 等 |
-| 更多 MCP 工具 | 接入 GitHub、文件系统、数据库等 MCP server |
+| Web Search 工具 | 接入 Serper / DuckDuckGo 等搜索引擎 |
 | 代码执行器 | 安全的 Python / SQL 执行环境 |
 | 多工具并行 | 一次调用多个工具并聚合结果 |
 | 更复杂的 Planner | 将复杂问题拆分为子问题分别求解 |
