@@ -124,11 +124,40 @@ class Agent:
 
     def _init_agentic(self) -> None:
         """Initialize the ReAct loop when agentic mode is enabled."""
+        self._react_loop: ReactLoop | None = None
+        self._langgraph_agent: Any = None
         if not self.config.agentic_enabled:
-            self._react_loop: ReactLoop | None = None
             return
 
         settings = get_settings()
+
+        # LangGraph 模式
+        if settings.agentic_use_langgraph:
+            from rag_agent.graph import LangGraphAgent, build_agentic_graph
+
+            router = self.config.router or RuleBasedRouter()
+            self_corrector = self.config.self_corrector or SelfCorrector(
+                llm_client=self.config.llm_client,
+                threshold=settings.agentic_faithfulness_threshold,
+                max_iterations=settings.agentic_max_iterations,
+            )
+
+            graph = build_agentic_graph(
+                knowledge_base=self.config.knowledge_base,
+                llm_client=self.config.llm_client,
+                long_term_memory=self.config.long_term_memory,
+                query_transformer=self.config.query_transformer,
+                self_corrector=self_corrector,
+                tools=self.config.tools or {},
+                router=router,
+                system_prompt=self.config.system_prompt,
+                top_k=settings.agent_top_k,
+                temperature=settings.llm_temperature,
+            )
+            self._langgraph_agent = LangGraphAgent(graph)
+            return
+
+        # 原有 ReactLoop 模式
         router = self.config.router
         if router is None and settings.agentic_use_llm_router:
             from rag_agent.agentic.router import LLMQueryRouter
@@ -181,12 +210,16 @@ class Agent:
 
     def chat(self, user_id: str, question: str) -> ChatResponse:
         """Run a full question-answering turn (synchronous)."""
+        if self.config.agentic_enabled and self._langgraph_agent is not None:
+            return self._run_langgraph_turn(user_id, question)
         if self.config.agentic_enabled and self._react_loop is not None:
             return self._run_agentic_turn(user_id, question)
         return self._run_turn(user_id, question, sync=True)
 
     async def achat(self, user_id: str, question: str) -> ChatResponse:
         """Run a full question-answering turn (asynchronous)."""
+        if self.config.agentic_enabled and self._langgraph_agent is not None:
+            return await self._run_langgraph_turn_async(user_id, question)
         if self.config.agentic_enabled and self._react_loop is not None:
             return await self._run_agentic_turn_async(user_id, question)
         return await self._run_turn_async(user_id, question)
@@ -741,6 +774,66 @@ class Agent:
         result = await self._react_loop.arun(user_id, question, history)
 
         return self._finalize_agentic_turn(user_id, question, result)
+
+    def _run_langgraph_turn(self, user_id: str, question: str) -> ChatResponse:
+        """LangGraph 同步执行一轮。"""
+        assert self._langgraph_agent is not None
+
+        blocked = self._check_input_guardrails(user_id, question)
+        if blocked is not None:
+            return blocked
+
+        result = self._langgraph_agent.chat(
+            user_id, question, self._get_history_messages()
+        )
+        return self._finalize_langgraph_turn(user_id, question, result)
+
+    async def _run_langgraph_turn_async(
+        self, user_id: str, question: str
+    ) -> ChatResponse:
+        """LangGraph 异步执行一轮。"""
+        assert self._langgraph_agent is not None
+
+        blocked = self._check_input_guardrails(user_id, question)
+        if blocked is not None:
+            return blocked
+
+        result = await self._langgraph_agent.achat(
+            user_id, question, self._get_history_messages()
+        )
+        return self._finalize_langgraph_turn(user_id, question, result)
+
+    def _finalize_langgraph_turn(
+        self, user_id: str, question: str, result: dict
+    ) -> ChatResponse:
+        """Post-process a LangGraph turn: memory, evaluation, cache."""
+        answer: str = result.get("answer", "")
+        contexts: list[str] = result.get("contexts", [])
+        long_term_facts: list[str] = result.get("long_term_facts", [])
+        search_query: str = result.get("search_query", question)
+
+        safe_answer = self._check_output_guardrails(answer)
+        if safe_answer is not None:
+            answer = safe_answer
+
+        self.config.short_term_memory.add("user", question)
+        self.config.short_term_memory.add("assistant", answer)
+        self._archive_to_medium_term()
+
+        if self.config.long_term_memory is not None:
+            facts = self.extractor.extract(question, answer)
+            for fact in facts:
+                self.config.long_term_memory.remember(user_id, fact)
+
+        evaluation = self._evaluate(question, answer, contexts)
+
+        return ChatResponse(
+            answer=answer,
+            contexts=[],
+            long_term_facts=long_term_facts,
+            search_query=search_query,
+            evaluation=evaluation,
+        )
 
     def _finalize_agentic_turn(
         self, user_id: str, question: str, result: "ReactResult"

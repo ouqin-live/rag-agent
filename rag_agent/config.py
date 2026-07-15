@@ -143,6 +143,10 @@ class Settings(BaseSettings):
         default=False,
         description="Use LLM-based query routing instead of rule-based routing",
     )
+    agentic_use_langgraph: bool = Field(
+        default=False,
+        description="Use LangGraph workflow instead of hardcoded ReactLoop",
+    )
 
     # ------------------------------------------------------------------
     # Guardrails (P2-3)

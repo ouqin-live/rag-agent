@@ -371,7 +371,7 @@
 | **阶段 3：质量与成本** | P1-1 Query 改写 + P1-2 语义缓存 + P1-4 Parent Document | 回答质量与延迟双提升，成本下降 30%+ |
 | **阶段 4：稳定性** | P1-8 容错重试 + Fallback LLM | 生产环境单点失败自愈 |
 | **阶段 5：观测与反馈** | P1-7 Trace 可观测 + P1-6 用户反馈 | 建立持续优化数据基础，可定位幻觉/超时根因 |
-| **阶段 6：Agent 化** ✅ 已完成 | P2-1 Agentic RAG（Self-Correction）+ P2-2 工具调用 | 从 RAG 升级为 Agent |
+| **阶段 6：Agent 化** ✅ 已完成 | P2-1 Agentic RAG（Self-Correction）+ P2-2 工具调用 + LangGraph 增量迁移 | 从 RAG 升级为 Agent |
 | **阶段 7：安全与治理** | P2-3 护栏 + P2-5 文档增强 + P2-6 成本配额 | 具备生产级服务能力 |
 
 ---
