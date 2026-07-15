@@ -152,25 +152,25 @@ Guardrails.check_output("LLM 输出")
 
 ### 3.3 在 Agent 主流程中的位置
 
+护栏已集成到 LangGraph 图中：
+
 ```
 用户提问
    │
-   ├──► Guardrails.check_input()     ← 第一步：输入安全过滤
-   │      ├── BLOCK → 返回安全提示
+   ├──►（图内 input_guardrail_node）
+   │      Guardrails.check_input()     ← 输入安全过滤
+   │      ├── BLOCK → 图短接到 END，返回安全提示
    │      └── 通过 → 继续
    │
-   ├──► SemanticCache.lookup()
-   ├──► QueryTransformer
-   ├──► LongTermMemory.recall()
-   ├──► KnowledgeBase.hybrid_search()
-   ├──► Guardrails.check_retrieval() ← 检索置信度门控
-   ├──► LLM.generate()
-   ├──► Guardrails.check_output()    ← 输出安全审核
-   ├──► ShortTermMemory.update()
-   ├──► MemoryExtractor
-   ├──► Evaluator.evaluate()
-   └──► SemanticCache.store()
+   ├──►（图内 cache_lookup → route → transform → retrieve → generate）
+   │
+   ├──►（图内 output_guardrail_node）
+   │      Guardrails.check_output()    ← 输出安全审核
+   │
+   └──►（图内 self_correction → remember → evaluate）
 ```
+
+置信度门控在 `retrieve_node` 内部执行，检索分数过低时记录警告。
 
 ## 4. 配置项
 

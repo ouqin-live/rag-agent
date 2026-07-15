@@ -88,7 +88,6 @@ def test_agentic_mode_uses_tools(
             knowledge_base=kb,
             short_term_memory=stm,
             llm_client=llm,
-            agentic_enabled=True,
             tools={"calculator": CalculatorTool()},
         )
     )

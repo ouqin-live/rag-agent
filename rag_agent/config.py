@@ -127,10 +127,6 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # Agentic RAG (P2-1)
     # ------------------------------------------------------------------
-    agentic_enabled: bool = Field(
-        default=False,
-        description="Enable Agentic RAG with self-correction loop",
-    )
     agentic_max_iterations: int = Field(
         default=2,
         description="Max ReAct / self-correction iterations per turn",

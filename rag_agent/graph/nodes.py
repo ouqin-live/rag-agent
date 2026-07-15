@@ -32,6 +32,10 @@ def make_nodes(
     system_prompt: str = "",
     top_k: int = 5,
     temperature: float = 0.3,
+    semantic_cache: Any | None = None,
+    guardrails: Any | None = None,
+    evaluator: Any | None = None,
+    memory_extractor: Any | None = None,
 ) -> dict[str, Callable[[GraphState], dict[str, Any]]]:
     """Create a dictionary of named node functions.
 
@@ -43,6 +47,45 @@ def make_nodes(
     _top_k = top_k
     _temperature = temperature
     _system_prompt = system_prompt
+
+    def input_guardrail_node(state: GraphState) -> dict[str, Any]:
+        """Check input safety: prompt injection + PII detection."""
+        if guardrails is None:
+            return {}
+        question = state.get("question", "")
+        result = guardrails.check_input(question)
+        if result.blocked:
+            logger.warning(
+                "输入护栏拦截 blocked_by=%s", result.blocked_by
+            )
+            return {
+                "guardrail_blocked": True,
+                "guardrail_message": result.blocked_by,
+                "answer": "抱歉，您的请求包含不安全内容，无法处理。",
+            }
+        return {"guardrail_blocked": False}
+
+    def cache_lookup_node(state: GraphState) -> dict[str, Any]:
+        """Check semantic cache for a similar previous query."""
+        if semantic_cache is None:
+            return {}
+        question = state.get("question", "")
+        user_id = state.get("user_id", "")
+        cached = semantic_cache.lookup(question, user_id)
+        if cached is None:
+            return {"cache_hit": False}
+        logger.info(
+            "语义缓存命中 user=%s query=%r", user_id, question[:50]
+        )
+        return {
+            "cache_hit": True,
+            "cached_answer": cached.get("answer", ""),
+            "answer": cached.get("answer", ""),
+            "contexts": cached.get("contexts", []),
+            "long_term_facts": cached.get("long_term_facts", []),
+            "evaluation": cached.get("evaluation"),
+            "search_query": cached.get("cached_query", question),
+        }
 
     def route_node(state: GraphState) -> dict[str, Any]:
         """Decide which data sources / tools are needed."""
@@ -159,12 +202,68 @@ def make_nodes(
             "iteration": iteration + 1,
         }
 
+    def output_guardrail_node(state: GraphState) -> dict[str, Any]:
+        """Check output for toxic/harmful content."""
+        if guardrails is None:
+            return {}
+        answer = state.get("answer", "")
+        if not answer:
+            return {}
+        result = guardrails.check_output(answer)
+        if result.blocked:
+            logger.warning("输出护栏拦截 output_toxicity")
+            return {"answer": "抱歉，生成的回答包含不当内容，已被替换。"}
+        return {}
+
+    def remember_node(state: GraphState) -> dict[str, Any]:
+        """Extract and store long-term memory facts from this turn."""
+        if long_term_memory is None:
+            return {}
+        question = state.get("question", "")
+        answer = state.get("answer", "")
+        user_id = state.get("user_id", "")
+        extractor = memory_extractor
+        if extractor is None:
+            from rag_agent.memory.extractor import RuleBasedMemoryExtractor
+            extractor = RuleBasedMemoryExtractor()
+        try:
+            facts = extractor.extract(question, answer)
+            for fact in facts:
+                long_term_memory.remember(user_id, fact)
+            if facts:
+                logger.debug("长期记忆存储 %d 条事实", len(facts))
+        except Exception as exc:
+            logger.warning("长期记忆提取失败: %s", exc)
+        return {}
+
+    def evaluate_node(state: GraphState) -> dict[str, Any]:
+        """Score answer quality and persist the evaluation result."""
+        if evaluator is None:
+            return {}
+        # Skip evaluation if we already have one from cache.
+        if state.get("evaluation"):
+            return {}
+        question = state.get("question", "")
+        answer = state.get("answer", "")
+        contexts = state.get("contexts", [])
+        try:
+            result = evaluator.evaluate(question, answer, contexts)
+            return {"evaluation": result}
+        except Exception as exc:
+            logger.warning("评估失败: %s", exc)
+            return {}
+
     return {
+        "input_guardrail": input_guardrail_node,
+        "cache_lookup": cache_lookup_node,
         "route": route_node,
         "transform_query": transform_query_node,
         "retrieve": retrieve_node,
         "generate": generate_node,
+        "output_guardrail": output_guardrail_node,
         "self_correction": self_correction_node,
+        "remember": remember_node,
+        "evaluate": evaluate_node,
     }
 
 
@@ -177,14 +276,28 @@ def decide_after_route(state: GraphState) -> str:
 
 
 def decide_after_correction(state: GraphState) -> str:
-    """Conditional edge: after self-correction, loop back or end."""
+    """Conditional edge: after self-correction, loop back or proceed to remember."""
     max_iterations = 2
     iteration = state.get("iteration", 0)
     needs_correction = state.get("needs_correction", False)
 
     if needs_correction and iteration < max_iterations:
         return "retrieve"
-    return END
+    return "remember"
+
+
+def decide_after_input_guardrail(state: GraphState) -> str:
+    """Conditional edge: after input guardrail, end if blocked."""
+    if state.get("guardrail_blocked"):
+        return END
+    return "cache_lookup"
+
+
+def decide_after_cache(state: GraphState) -> str:
+    """Conditional edge: after cache lookup, end if hit."""
+    if state.get("cache_hit"):
+        return END
+    return "route"
 
 
 # -- Internal helpers --------------------------------------------------------

@@ -21,13 +21,11 @@
 
 ### 1.2 关键差距
 
-- 无测试体系，一个测试文件都没有
-- 无服务化接口，只有 `main.py` 演示脚本
-- 全同步调用，无异步 / 流式能力
-- 缺少统一配置管理，大量阈值硬编码
-- Python 版本要求 `>=3.14`，限制采用
-- 无缓存、无可观测、无用户反馈闭环
-- Query 改写、Agentic 检索、基础工具调用、安全护栏已落地；Web Search、OCR、多模态文档解析等进阶能力仍待实现
+- Python 版本要求 `>=3.14`，限制采用（已降级到 3.10）
+- 无可观测性、无用户反馈闭环
+- Web Search、OCR、多模态文档解析等进阶能力仍待实现
+- 流式输出（已完成 Sync/Async API，待实现真正的 token 级流式）
+- 知识库版本感知缓存失效
 
 ---
 
@@ -252,36 +250,13 @@
     - 例如：Faithfulness 分数低 → 重新检索更相关的上下文
   - **查询路由**：根据问题类型选择 KB、长期记忆、Web Search、计算器等
 - **产出**：新增 `rag_agent/agentic/` 模块
-- **状态**：✅ 已完成（基础能力落地并补齐与原流程的对齐）
+- **状态**：✅ 已完成（基础能力 + LangGraph 全链路落地）
 - **实现摘要**：
-  - 新增 `rag_agent/agentic/` 模块：
-    - `base.py`：定义 `AgenticContext`、`BaseTool`、`ToolResult`
-    - `router.py`：规则路由 `RuleBasedRouter` + LLM 路由 `LLMQueryRouter`，
-      支持自动选择 `knowledge_base`、`long_term_memory`、`calculator`、`datetime`
-    - `tools.py`：内置安全计算器 `CalculatorTool`、时间工具 `DatetimeTool`
-    - `self_correction.py`：基于 `FaithfulnessMetric` 的 `SelfCorrector`，
-      分数低于阈值时自动重写查询并补充检索；
-      优先复用 `Evaluator` 中名为 `faithfulness` 的指标，保证与最终评估标准一致
-    - `react.py`：`ReactLoop` 实现 路由 → 查询改写 → 检索 → 生成 → 反思 → 修正 循环
-  - `Agent` 支持 `agentic_enabled` 模式：启用后走 ReAct / Self-Correction 流程；
-    未启用时保持原有高级 RAG 流程不变
-  - 与原高级 RAG 流程对齐：
-    - Agentic 流程前置语义缓存命中，避免重复执行 ReAct 循环
-    - `QueryTransformer` 传入原始 `Message` 列表，支持 `RewritingTransformer` 指代消解
-    - Prompt 中注入中期记忆摘要
-    - 大模型生成失败时返回基于参考资料/工具结果的兜底回答
-    - `achat_stream` 支持 Agentic 模式（执行 ReAct 后模拟流式输出）
-  - 新增模块文档 `docs/Agentic_Module.md`
-  - 配置项已加入 `rag_agent/config.py` 和 `.env.example`：
-    `AGENTIC_ENABLED`、`AGENTIC_MAX_ITERATIONS`、
-    `AGENTIC_FAITHFULNESS_THRESHOLD`、`AGENTIC_USE_LLM_ROUTER`
-  - **LangGraph 工作流替代方案**（可选）：
-    - 新增 `rag_agent/graph/` 模块，实现 LangGraph 状态图替代硬编码 `ReactLoop`
-    - 状态图流程：route → transform_query → retrieve → generate → self_correction
-    - 新增 `LangGraphAgent` 封装，支持 sync/async 调用
-    - 通过 `AGENTIC_USE_LANGGRAPH` 开关在 ReactLoop / LangGraph 间切换
-    - 迁移方案文档：`docs/LangGraph_Migration_Plan.md`
-    - 新增 4 个 LangGraph 集成测试
+  - LangGraph 状态图驱动全流程：10 节点涵盖 护栏 → 缓存 → 路由 → 改写 → 检索 → 生成 → 输出护栏 → 自我修正 → 记忆存储 → 评估
+  - `rag_agent/agentic/` 中的路由器、工具、自我修正器作为图的节点依赖注入
+  - `rag_agent/graph/` 提供状态定义、节点工厂、图组装、LangGraphAgent 封装
+  - 详见 `docs/Agentic_Module.md` 和 `docs/LangGraph_Migration_Plan.md`
+  - 配置项：`AGENTIC_MAX_ITERATIONS`、`AGENTIC_FAITHFULNESS_THRESHOLD`、`AGENTIC_USE_LLM_ROUTER`
 
 #### P2-2 工具调用生态
 

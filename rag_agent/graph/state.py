@@ -43,6 +43,10 @@ class GraphState(TypedDict, total=False):
     needs_correction: bool
     correction_message: str
 
+    # ---- Guardrails ----
+    guardrail_blocked: bool
+    guardrail_message: str
+
     # ---- Cache ----
     cache_hit: bool
     cached_answer: str

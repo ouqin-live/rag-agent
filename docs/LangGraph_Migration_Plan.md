@@ -145,7 +145,7 @@ State 里放这些字段：
 · 通过 AGENTIC_USE_LANGGRAPH 开关和现有 ReactLoop 并行运行
 · 跑通现有测试，确保两种模式行为一致
 
-### 阶段三：接入完整链路
+### 阶段三：接入完整链路 ✅ 已完成
 
 · 接入语义缓存
 · 接入 Query Rewriting
@@ -155,9 +155,9 @@ State 里放这些字段：
 
 ### 阶段四：增强能力
 
-· 流程可视化
-· 断点与人机协同
-· 多 Agent 节点，例如专门的 Critic Agent
+· **流程可视化** ✅ 已完成 — `uv run python -m rag_agent.graph.graph` 输出 ASCII + Mermaid
+· **断点与人机协同** ❌ 不需要 — 知识问答系统已有护栏、自我修正、评估三层自动化品控，错误成本可控，无需实时人工介入。长期记忆确认通过自然对话反馈即可，不需要 `checkpointer` + `interrupt`
+· **多 Agent 节点（Critic Agent subgraph）** ⏸️ 暂缓 — 当前短答案 + 少量上下文的场景，SelfCorrector 一步到位；等多数据源接入（Web Search 等）后再评估是否拆成独立 subgraph
 
 ---
 

@@ -22,9 +22,20 @@ uv sync
 cp .env.example .env
 # 编辑 .env，填入 AI_STUDIO_TOKEN
 
-# 3. 运行端到端验证
+# 3. 运行端到端验证（全部 case）
 uv run python main.py
+
+# 只跑指定 case
+uv run python main.py -c 1,2,kb       # 数字或名称，逗号分隔
+uv run python main.py -c guardrails   # 只跑安全护栏
+uv run python main.py -l              # 列出所有可用 case
 ```
+
+`main.py` 直接连接真实 LLM，不提供 Mock 降级。启动时会自动：
+
+- 在 `/tmp/rag_agent_phase4_test/` 生成测试文档（RAG 简介）
+- 将文档分块写入知识库 `data/phase4/kb/`（Chroma 向量库）
+- 长期记忆落盘到 `data/phase4/memory/`
 
 ## 运行测试
 
@@ -35,6 +46,14 @@ uv run pytest tests/ -v
 ```
 
 测试使用 `MockLLMClient` 和内存/临时向量库，无需配置真实 LLM 即可离线运行。
+
+## 可视化图结构
+
+```bash
+uv run python -m rag_agent.graph.graph
+```
+
+输出 LangGraph 工作流的 Mermaid 图，方便查看 Agent 编排逻辑。
 
 ## 启动 API 服务
 
@@ -136,65 +155,4 @@ EVAL_FAILURE_THRESHOLD=0.6
 ## 技术栈
 
 Python 3.10+ · sentence-transformers · Chroma · OpenAI SDK · FastAPI · pydantic-settings · pymupdf · uv
-# RAG Agent
 
-具备记忆 + 知识库 + 自动评估能力的 RAG（检索增强生成）Agent。
-
-## 架构
-
-```
-User Query → Agent 编排层
-                ├── 记忆层（短期会话 + 长期用户事实）
-                ├── 知识库层（文档加载 → 分块 → Chroma 向量库）
-                ├── 生成层（OpenAI 兼容 LLM，支持降级）
-                └── 评估层（Faithfulness / Answer Relevance / Context Precision）
-```
-
-## 快速开始
-
-```bash
-# 1. 安装依赖
-uv sync
-
-# 2. 配置 LLM（复制模板并填写你的 token）
-cp .env.example .env
-# 编辑 .env，填入 AI_STUDIO_TOKEN
-
-# 3. 运行端到端验证
-uv run python main.py
-```
-
-## 配置
-
-在 `.env` 文件中配置 LLM 接入：
-
-```env
-AI_STUDIO_TOKEN=your_token_here
-OPENAI_BASE_URL=https://idealab.alibaba-inc.com/api/openai/v1
-OPENAI_MODEL=qwen3.6-plus
-```
-
-不配置 LLM 也可运行，会自动降级为 Mock 模式。
-
-## 模块说明
-
-| 模块 | 目录 | 功能 |
-|---|---|---|
-| 知识库 | `rag_agent/knowledge/` | 多格式文档加载（txt/md/pdf/url）、分块、Chroma 向量存储与语义检索 |
-| 记忆 | `rag_agent/memory/` | 短期会话记忆 + 长期用户事实（向量库存储，支持去重与容量限制） |
-| 评估 | `rag_agent/evaluation/` | RAGAS 风格指标（Faithfulness / Relevance / Precision）+ 规则检查 |
-| Agent | `rag_agent/agent.py` | 编排记忆 → 知识库 → LLM → 评估的全链路 |
-| LLM | `rag_agent/llm.py` | OpenAI 兼容客户端，支持 .env 配置与 Mock 降级 |
-
-## 文档
-
-- [产品需求](docs/PRD.md)
-- [技术设计](docs/Technical_Design.md)
-- [整体架构](docs/Architecture.md)
-- [知识库模块](docs/Knowledge_Base.md)
-- [记忆模块](docs/Memory_Module.md)
-- [安全护栏模块](docs/Guardrails_Module.md)
-
-## 技术栈
-
-Python 3.14+ · sentence-transformers · Chroma · OpenAI SDK · pymupdf · uv

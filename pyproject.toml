@@ -19,6 +19,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "langgraph>=0.2.0",
     "langchain-core>=0.3.0",
+    "grandalf>=0.8",
 ]
 
 [dependency-groups]

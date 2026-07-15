@@ -84,21 +84,20 @@ SemanticCache.store(
 
 ### 3.3 在 Agent 中的位置
 
+语义缓存已集成到 LangGraph 图中：
+
 ```
 用户提问
    │
-   ├──► SemanticCache.lookup()     ← 第一步：查缓存
-   │      ├── 命中 → 直接返回（跳过后 7 步）
-   │      └── 未命中 → 继续
+   ├──►（图内 cache_lookup_node）
+   │      SemanticCache.lookup()     ← 第一步：查缓存
+   │      ├── 命中 → 图短接到 END
+   │      └── 未命中 → 继续图中后续节点
    │
-   ├──► QueryTransformer
-   ├──► LongTermMemory.recall()
-   ├──► KnowledgeBase.hybrid_search()
-   ├──► LLM.generate()
-   ├──► ShortTermMemory.update()
-   ├──► MemoryExtractor → LongTermMemory.remember()
-   ├──► Evaluator.evaluate()
-   └──► SemanticCache.store()      ← 最后一步：写入缓存
+   ├──►（图内：路由 → 改写 → 检索 → 生成 → 护栏 → 修正 → 记忆 → 评估）
+   │
+   └──►（图外 Agent._finalize_turn）
+          SemanticCache.store()      ← 最后一步：写入缓存
 ```
 
 ## 4. 配置项

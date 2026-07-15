@@ -2,6 +2,311 @@
 
 本文档描述 `rag-agent` 的整体架构、模块职责与核心数据流。
 
+> 对应版本：v0.3.0+（LangGraph 全链路）
+
+## 1. 总体架构
+
+```
+User Query
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│   API 层                                 │  ← rag_agent/api.py
+│   FastAPI / REST / SSE                  │
+└────────┬────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────┐
+│   Agent 编排层                           │  ← rag_agent/agent.py
+│   LangGraph 状态图驱动全流程              │
+└────────┬────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────┐
+│   LangGraph 工作流（rag_agent/graph/）   │
+│                                         │
+│   input_guardrail → cache_lookup        │
+│   → route → transform_query             │
+│   → retrieve → generate                 │
+│   → output_guardrail → self_correction  │
+│   → remember → evaluate                 │
+└────────┬────────────────────────────────┘
+         │
+    ┌────┴────┬────────────┬────────────┐
+    ▼         ▼            ▼            ▼
+┌───────┐ ┌────────┐  ┌─────────┐  ┌──────────┐
+│ 记忆层 │ │ 知识库层 │  │ 安全护栏 │  │ 评估层    │
+└───────┘ └────────┘  └─────────┘  └──────────┘
+```
+
+Agent 的整个问答流程由一张 LangGraph 状态图驱动，每个步骤是一个节点，节点间通过边连接。图结构可配置、可观测、便于扩展。
+
+## 2. 各层职责与对应文件
+
+### 2.1 API 层
+
+**文件**：`rag_agent/api.py`
+
+基于 FastAPI 暴露 REST 服务：
+
+- `POST /chat`：单轮/多轮对话
+- `POST /chat/stream`：Server-Sent Events 流式对话
+- `POST /documents`：文件上传或本地路径入库
+- `DELETE /documents/{doc_id}`：删除文档
+- `GET /memory/{user_id}`：查看用户长期记忆
+- `GET /evaluations/reports`：失败案例报告
+
+启动方式：
+
+```bash
+uv run python -m rag_agent.api
+```
+
+### 2.2 Agent 编排层
+
+**文件**：`rag_agent/agent.py`
+
+`Agent` 类负责创建 LangGraph 图并调度执行。核心方法：
+
+| 方法 | 说明 |
+|---|---|
+| `Agent.chat(user_id, question)` | 同步单轮对话 |
+| `Agent.achat(user_id, question)` | 异步单轮对话 |
+| `Agent.achat_stream(user_id, question)` | 异步流式生成 |
+
+每次调用将用户问题注入 LangGraph 状态图，图自动执行完整链路。图执行完毕后，Agent 做后处理：更新短期记忆、写入语义缓存。
+
+### 2.3 LangGraph 工作流
+
+**文件**：`rag_agent/graph/`
+
+状态图是 Agent 的核心引擎，定义了 10 个节点：
+
+| 节点 | 文件 | 职责 |
+|---|---|---|
+| `input_guardrail` | `nodes.py` | 输入护栏：Prompt Injection + PII 检测 |
+| `cache_lookup` | `nodes.py` | 语义缓存查询，命中时短接结束 |
+| `route` | `nodes.py` | 查询路由：选择 KB / LTM / 工具 |
+| `transform_query` | `nodes.py` | Query Rewriting：指代消解与标准化 |
+| `retrieve` | `nodes.py` | 检索：KB 混合检索 + LTM 召回 + 工具调用 |
+| `generate` | `nodes.py` | LLM 生成答案 |
+| `output_guardrail` | `nodes.py` | 输出护栏：毒性审核 |
+| `self_correction` | `nodes.py` | 自我修正：Faithfulness 评估 + query 重写 |
+| `remember` | `nodes.py` | 提取事实并写入长期记忆 |
+| `evaluate` | `nodes.py` | 评估打分并持久化 |
+
+**状态定义**：[`state.py`](../rag_agent/graph/state.py) 用 TypedDict 定义 GraphState，包含路由决策、检索结果、生成答案、修正状态、缓存标记、评估结果等字段。
+
+**图组装**：[`graph.py`](../rag_agent/graph/graph.py) 用 `StateGraph` 将节点和边组装成可执行图。
+
+完整图结构：
+
+```
+START
+  → input_guardrail ──(blocked)→ END
+  → cache_lookup ──(hit)→ END
+  → route → transform_query → retrieve → generate
+  → output_guardrail → self_correction
+    ├──(needs correction)→ retrieve（循环）
+    └──(done)→ remember → evaluate → END
+```
+
+### 2.4 知识库层
+
+**文件**：`rag_agent/knowledge/`
+
+| 组件 | 文件 | 职责 |
+|---|---|---|
+| 抽象层 | `base.py` | `Document` / `Chunk` / `VectorStore` 接口 |
+| 加载器 | `loader.py` | 支持 txt、md、pdf、url 的多格式加载 |
+| 分块器 | `chunker.py` | `FixedSizeChunker` / `RecursiveChunker` / `SemanticChunker` |
+| 重排序 | `reranker.py` | `EmbeddingReranker` / `CrossEncoderReranker` |
+| 向量存储 | `chroma_store.py` | `ChromaVectorStore`：HNSW 索引，自动持久化 |
+| 兼容存储 | `store.py` | `LocalVectorStore`：SQLite + numpy，零额外依赖 |
+| 编排入口 | `kb.py` | `KnowledgeBase`：加载 → 分块 → embedding → 入库 → 检索 |
+
+检索流程：
+
+```
+query
+  │
+  ├──► Dense 向量检索（Chroma HNSW）
+  ├──► BM25 关键词检索
+  ├──► RRF 融合排序
+  └──► 可选 EmbeddingReranker 精排
+```
+
+### 2.5 记忆层
+
+**文件**：`rag_agent/memory/`
+
+三层记忆架构：
+
+```
+ShortTermMemory（当前会话最近 N 轮）
+         │
+         ▼ 超出限制时归档
+MediumTermMemory（本次会话摘要）
+         │
+         ▼ 每轮自动提取
+LongTermMemory（跨会话用户事实/偏好，Chroma 持久化）
+```
+
+| 组件 | 文件 | 职责 |
+|---|---|---|
+| 短期记忆 | `short_term.py` | 内存中保留最近 N 轮完整对话 |
+| 中期记忆 | `medium_term.py` | 会话摘要，旧轮次超出限制时由 LLM 压缩 |
+| 事实提取 | `extractor.py` | LLM + 规则双路提取用户偏好/事实 |
+| 长期记忆 | `long_term.py` | 基于 Chroma 持久化用户事实 |
+
+### 2.6 安全护栏
+
+**文件**：`rag_agent/guardrails.py`
+
+- **输入护栏**：Prompt Injection 检测（14 组正则）+ PII 检测与脱敏
+- **输出护栏**：敏感内容/毒性审核（5 类敏感词）
+- **置信度门控**：检索分数过低时主动记录警告
+
+护栏已接入 LangGraph 图的 `input_guardrail` 和 `output_guardrail` 节点。默认 WARN 模式，可切换为硬拦截。
+
+### 2.7 生成层
+
+**文件**：`rag_agent/llm.py`
+
+- `OpenAICompatibleClient`：兼容 OpenAI API
+- `MockLLMClient`：无 LLM 服务时的确定性降级
+- `ResilientLLMClient`：指数退避重试 + Fallback 模型切换（`rag_agent/resilience.py`）
+
+### 2.8 评估层
+
+**文件**：`rag_agent/evaluation/`
+
+| 组件 | 文件 | 职责 |
+|---|---|---|
+| 抽象层 | `base.py` | `EvaluationResult` / `BaseMetric` |
+| 指标 | `metrics.py` | Faithfulness / Answer Relevance / Context Precision |
+| 规则 | `rules.py` | 空回答、长度、拒绝、敏感词、明显幻觉检查 |
+| 评估器 | `evaluator.py` | 组合指标与规则，SQLite 持久化 |
+| 报告 | `report.py` | 失败案例文本报告与 CSV 导出 |
+
+评估已接入 LangGraph 图的 `evaluate_node`，每次回答后自动执行。
+
+### 2.9 Embedding 层
+
+**文件**：`rag_agent/embedder.py`
+
+- `SentenceTransformerEmbedder`：优先加载 `BAAI/bge-small-zh-v1.5`
+- `FallbackEmbedding`：离线降级，维度自动与真实模型对齐
+
+### 2.10 配置层
+
+**文件**：`rag_agent/config.py`
+
+基于 Pydantic Settings 集中管理所有参数，支持 `.env` 文件或环境变量覆盖。
+
+## 3. 核心数据流
+
+### 3.1 一次对话的完整流程（图内）
+
+```
+用户提问 "RAG 是什么？"
+   │
+   ├──► input_guardrail：检查 Prompt Injection / PII
+   │      └── 拦截 → 返回安全提示，流程结束
+   │
+   ├──► cache_lookup：查询语义缓存
+   │      └── 命中 → 返回缓存答案，流程结束
+   │
+   ├──► route：QueryRouter 决定数据源
+   │      └── use_knowledge_base=True
+   │
+   ├──► transform_query：QueryTransformer 改写
+   │      └── "RAG 是什么？" → 保持不变（首轮无指代）
+   │
+   ├──► retrieve：并行检索
+   │      ├── KnowledgeBase.hybrid_search → Top-K chunks
+   │      └── LongTermMemory.recall → 用户相关事实
+   │
+   ├──► generate：LLM 基于上下文生成答案
+   │
+   ├──► output_guardrail：检查输出毒性
+   │      └── 命中 → 替换为安全回答
+   │
+   ├──► self_correction：Faithfulness 评估
+   │      ├── 分数不足 → 重写 query → 回到 retrieve（循环）
+   │      └── 通过 → 继续
+   │
+   ├──► remember：提取本轮事实 → LongTermMemory.remember()
+   │
+   └──► evaluate：评估打分 → 写入 SQLite
+```
+
+### 3.2 图外后处理
+
+```
+图执行完毕
+   │
+   ├──► ShortTermMemory.add(user, question)
+   ├──► ShortTermMemory.add(assistant, answer)
+   ├──► 旧轮次超出限制 → MediumTermMemory.update()
+   │
+   └──► SemanticCache.store()：写入缓存供下次复用
+```
+
+## 4. 关键设计决策
+
+| 决策 | 说明 |
+|---|---|
+| **LangGraph 统一编排** | 全流程由一张状态图驱动，节点可独立测试、可观测、可扩展 |
+| **本地优先** | Chroma 本地向量库 + sentence-transformers 本地 embedding，离线可用 |
+| **降级无处不在** | embedding、LLM、评估指标均可在离线时降级，保证核心流程不中断 |
+| **模块解耦** | 知识库/记忆/评估/护栏均通过抽象接口注入图节点，便于替换 |
+| **持久化** | 向量库、长期记忆、评估结果均持久化到 `data/` 目录，重启不丢失 |
+| **配置外部化** | 所有可调参数通过 `rag_agent/config.py` + `.env` 管理 |
+
+## 5. 运行入口
+
+### 5.1 端到端验证
+
+```bash
+uv run python main.py
+```
+
+支持 `--cases` 参数选择性运行：`uv run python main.py --cases kb,memory,guardrails`
+
+### 5.2 API 服务
+
+```bash
+uv run python -m rag_agent.api
+```
+
+服务启动后访问 `http://localhost:8000/docs` 查看 Swagger 文档。
+
+### 5.3 图可视化
+
+```bash
+uv run python -m rag_agent.graph.graph
+```
+
+输出 LangGraph 状态图的 ASCII 和 Mermaid 两种视图。
+
+## 6. 模块文档索引
+
+| 模块 | 文档 |
+|---|---|
+| Agentic / LangGraph 工作流 | `docs/Agentic_Module.md` |
+| 知识库 | `docs/Knowledge_Base.md` |
+| 记忆系统 | `docs/Memory_Module.md` |
+| 语义缓存 | `docs/Cache_Module.md` |
+| 检索增强（Query Rewriting） | `docs/Retrieval_Module.md` |
+| 安全护栏 | `docs/Guardrails_Module.md` |
+| 自动评估 | `docs/Evaluation_Module.md` |
+| 优化路线图 | `docs/Optimization_Roadmap.md` |
+| LangGraph 迁移方案 | `docs/LangGraph_Migration_Plan.md` |
+# RAG Agent 架构说明
+
+本文档描述 `rag-agent` 的整体架构、模块职责与核心数据流。
+
 > 对应版本：v0.2.0+
 
 ## 1. 总体架构

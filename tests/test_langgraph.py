@@ -70,11 +70,6 @@ def test_agent_langgraph_via_agent(
     mock_embedder: BaseEmbedder,
 ) -> None:
     """Test that the main Agent class works with LangGraph enabled."""
-    import os
-
-    os.environ["AGENTIC_USE_LANGGRAPH"] = "true"
-    os.environ["AGENTIC_ENABLED"] = "true"
-
     kb = _build_kb(temp_dir, mock_embedder)
     stm = ShortTermMemory()
     llm = MockLLMClient({"RAG": "RAG stands for retrieval augmented generation."})
@@ -86,7 +81,6 @@ def test_agent_langgraph_via_agent(
             knowledge_base=kb,
             short_term_memory=stm,
             llm_client=llm,
-            agentic_enabled=True,
             tools={"calculator": CalculatorTool()},
         )
     )

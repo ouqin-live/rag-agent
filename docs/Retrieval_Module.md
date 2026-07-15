@@ -62,20 +62,22 @@ KnowledgeBase.hybrid_search(transformed_queries)
 
 ### 3.1 在 Agent 中的位置
 
+查询改写已集成到 LangGraph 图的 `transform_query_node`：
+
 ```
 用户提问
    │
-   ├──► SemanticCache.lookup() ── 缓存命中则直接返回
+   ├──►（图内 input_guardrail → cache_lookup → route）
    │
-   ├──► QueryTransformer.transform(question, history)
-   │      └── 返回改写后的检索 query 列表
+   ├──►（图内 transform_query_node）
+   │      QueryTransformer.transform(question, history)
+   │      └── 返回改写后的检索 query
    │
-   ├──► LongTermMemory.recall(rewritten_query)
+   ├──►（图内 retrieve_node）
+   │      KnowledgeBase.hybrid_search(rewritten_query)
+   │      LongTermMemory.recall(rewritten_query)
    │
-   ├──► KnowledgeBase.hybrid_search(rewritten_query)
-   │      └── 返回 Top-K chunks
-   │
-   └──► 后续生成与评估
+   └──►（图内 generate 及后续节点）
 ```
 
 ### 3.2 同步与异步

@@ -1,5 +1,176 @@
 # Agentic 模块说明
 
+> 对应版本：v0.3.0+（LangGraph 全链路）  
+> 相关代码：`rag_agent/graph/`、`rag_agent/agentic/`
+
+本文档描述 `rag-agent` 的 Agentic RAG 能力，包括 LangGraph 状态图工作流、查询路由、自我修正、工具调用。
+
+---
+
+## 1. 定位
+
+Agent 的**全部问答流程**由一张 LangGraph 状态图驱动。不再是「可选路径」，而是唯一编排引擎。
+
+```
+用户问题
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│          LangGraph 状态图                 │
+│                                         │
+│  input_guardrail → cache_lookup         │
+│  → route → transform_query → retrieve  │
+│  → generate → output_guardrail         │
+│  → self_correction → remember → evaluate│
+└─────────────────────────────────────────┘
+```
+
+`rag_agent/agentic/` 中的路由、工具、自我修正等组件作为图的**节点依赖**注入，不再自行驱动循环。
+
+---
+
+## 2. 核心组件
+
+### 2.1 LangGraph 工作流（`rag_agent/graph/`）
+
+| 文件 | 类/函数 | 职责 |
+|---|---|---|
+| `state.py` | `GraphState` | TypedDict 状态定义，贯穿所有节点 |
+| `nodes.py` | `make_nodes()` | 节点工厂，闭包注入依赖生成 10 个节点 |
+| `graph.py` | `build_agentic_graph()` | 用 StateGraph 组装节点和边，编译成可执行图 |
+| `agent.py` | `LangGraphAgent` | 封装图调用，提供 sync/async `chat` 接口 |
+
+### 2.2 Agentic 组件（`rag_agent/agentic/`）
+
+| 文件 | 类/函数 | 职责 | 被图节点使用 |
+|---|---|---|---|
+| `base.py` | `BaseTool` / `ToolResult` | 工具接口 | `retrieve_node` |
+| `router.py` | `RuleBasedRouter` / `LLMQueryRouter` | 查询路由 | `route_node` |
+| `tools.py` | `CalculatorTool` / `DatetimeTool` | 内置工具 | `retrieve_node` |
+| `self_correction.py` | `SelfCorrector` | 忠实度评估 + query 重写 | `self_correction_node` |
+
+---
+
+## 3. 图节点详解
+
+### 3.1 input_guardrail — 输入护栏
+
+检查 Prompt Injection 和 PII。拦截时设置 `guardrail_blocked=True`，图短接到 END。
+
+### 3.2 cache_lookup — 语义缓存
+
+调用 `SemanticCache.lookup()` 查询相似历史问题。命中时设置 `cache_hit=True`，图短接到 END。
+
+### 3.3 route — 查询路由
+
+`RuleBasedRouter` 根据问题类型决定启用哪些数据源：
+
+| 问题类型 | 示例 | 路由结果 |
+|---|---|---|
+| 数学计算 | `1 + 2 等于多少` | `calculator` |
+| 当前时间 | `现在几点` | `datetime` |
+| 个人偏好 | `我喜欢的颜色是什么` | `long_term_memory` + `knowledge_base` |
+| 一般知识 | `什么是 RAG` | `knowledge_base` |
+
+开启 `AGENTIC_USE_LLM_ROUTER=true` 后切换为 LLM 路由，失败自动降级到规则路由。
+
+### 3.4 transform_query — 查询改写
+
+`QueryTransformer`（默认 `RewritingTransformer`）对问题做指代消解和标准化。例如：
+
+- `"那它怎么减少幻觉？"` → `"RAG（检索增强生成）是如何减少幻觉的？"`
+
+改写失败时自动回退到原始问题。
+
+### 3.5 retrieve — 并行检索
+
+根据路由结果并行执行：
+
+- **知识库**：`KnowledgeBase.hybrid_search()`（Dense + BM25 + RRF）
+- **长期记忆**：`LongTermMemory.recall()`
+- **工具调用**：`CalculatorTool` / `DatetimeTool`
+
+任一源失败不阻断其他源，降级为空结果继续。
+
+### 3.6 generate — 答案生成
+
+用系统提示 + 用户事实 + 参考资料 + 工具结果 + 对话历史构建 prompt，LLM 生成答案。失败时返回基于上下文的兜底回答。
+
+### 3.7 output_guardrail — 输出护栏
+
+检查 LLM 输出中的毒性/敏感内容（暴力、色情、仇恨言论等 5 类）。命中时替换为安全兜底回答。
+
+### 3.8 self_correction — 自我修正
+
+`SelfCorrector` 用 Faithfulness 指标评估答案质量：
+
+- 分数 ≥ `AGENTIC_FAITHFULNESS_THRESHOLD`（默认 0.5）：通过，进入 remember
+- 分数 < 阈值：LLM 生成更聚焦的补充查询，回到 retrieve 重新检索
+
+循环最多 `AGENTIC_MAX_ITERATIONS` 次（默认 2）。
+
+### 3.9 remember — 记忆存储
+
+`LLMMemoryExtractor` 从本轮 Q&A 中提取用户事实/偏好，写入 `LongTermMemory`。LLM 提取失败时自动降级到规则提取。
+
+### 3.10 evaluate — 评估打分
+
+`Evaluator` 对回答做 Faithfulness / Answer Relevance / Context Precision 三维评分 + 规则检查，结果写入 SQLite。
+
+---
+
+## 4. 工具调用
+
+当前内置工具：
+
+- `CalculatorTool`：基于 AST 安全计算算术表达式
+- `DatetimeTool`：返回当前日期时间
+
+工具接口为 `BaseTool`，通过 `AgentConfig.tools` 字典注册：
+
+```python
+from rag_agent.agentic import CalculatorTool
+
+agent = Agent(AgentConfig(
+    ...
+    tools={"calculator": CalculatorTool()},
+))
+```
+
+---
+
+## 5. 兜底与降级
+
+| 场景 | 行为 |
+|---|---|
+| 路由失败（LLM 路由） | 降级到 `RuleBasedRouter` |
+| 查询改写失败 | 回退到原始问题 |
+| LLM 生成失败 | 返回基于参考资料/工具结果的兜底回答 |
+| 检索失败 | 记录警告，继续用空上下文生成 |
+| 护栏拦截 | 返回安全兜底提示（WARN 模式仅记录日志） |
+
+---
+
+## 6. 配置项
+
+| 配置项 | 环境变量 | 默认值 | 说明 |
+|---|---|---|---|
+| 最大迭代次数 | `AGENTIC_MAX_ITERATIONS` | `2` | 自我修正最大轮数 |
+| 忠实度阈值 | `AGENTIC_FAITHFULNESS_THRESHOLD` | `0.5` | 低于该阈值触发修正 |
+| 使用 LLM 路由 | `AGENTIC_USE_LLM_ROUTER` | `false` | 是否使用 LLM 做查询路由 |
+
+---
+
+## 7. 后续扩展
+
+| 方向 | 说明 |
+|---|---|
+| Web Search 工具 | 接入搜索引擎 |
+| 代码执行器 | 安全的 Python / SQL 执行环境 |
+| 多工具并行 | 一次调用多个工具并聚合结果 |
+| 流式 Agentic | 图中支持 token 级流式输出 |
+# Agentic 模块说明
+
 > 对应版本：v0.2.0+  
 > 相关代码：`rag_agent/agentic/`
 

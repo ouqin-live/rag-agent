@@ -99,17 +99,15 @@ question + answer + contexts
 
 ### 3.2 在 Agent 中的位置
 
-每次 `Agent.chat()` 末尾自动调用：
+评估已集成到 LangGraph 图的 `evaluate_node`，每次回答后自动执行：
 
-```python
-evaluation = self.config.evaluator.evaluate(
-    question=question,
-    answer=answer,
-    contexts=contexts,
-)
+```
+图内 evaluate_node（生成 + 记忆存储之后）：
+   evaluator.evaluate(question, answer, contexts)
+      └── 写入 SQLite evaluations 表
 ```
 
-评估结果通过 `ChatResponse.evaluation` 返回，同时自动持久化。
+评估结果通过 `ChatResponse.evaluation` 返回。
 
 ## 4. 当前局限
 

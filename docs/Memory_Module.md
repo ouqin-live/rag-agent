@@ -2,7 +2,7 @@
 
 ## 1. 当前架构
 
-当前记忆模块位于 `rag_agent/memory/`，采用**两层记忆**设计：
+当前记忆模块位于 `rag_agent/memory/`，采用**三层记忆**设计：
 
 ```
 User Query
@@ -10,8 +10,11 @@ User Query
     ├──► 短期记忆（ShortTermMemory）
     │      当前会话最近 N 轮完整对话
     │
+    ├──► 中期记忆（MediumTermMemory）
+    │      旧轮次超出限制时 LLM 压缩为会话摘要
+    │
     └──► 长期记忆（LongTermMemory）
-           跨会话用户事实/偏好（向量库存储）
+           跨会话用户事实/偏好（Chroma 向量库存储）
 ```
 
 ### 1.1 短期记忆 `ShortTermMemory`
@@ -27,7 +30,7 @@ User Query
 
 **文件**：`rag_agent/memory/long_term.py`
 
-- 复用 `LocalVectorStore`（SQLite + numpy）做持久化
+- 复用 `ChromaVectorStore` 做持久化
 - 每个事实保存为带 embedding 的 chunk，按 `user_id` 过滤召回
 - 支持 `remember`、`recall`、`forget`
 - 去重策略：
@@ -51,35 +54,29 @@ User Query
 
 ## 2. 数据流
 
+记忆的召回和存储已集成到 LangGraph 图中：
+
 ```
-用户提问
-   │
+图内 retrieve_node：
    ├──► LongTermMemory.recall(user_id, question)
-   │      └── 返回相关用户事实
-   │
-   ├──► 生成回答
-   │
+   │      └── 返回相关用户事实，注入 prompt
+
+图内 remember_node（生成后）：
+   ├──► MemoryExtractor.extract(question, answer)
+   │      └── 提取新事实
+   └──► LongTermMemory.remember(user_id, fact)
+
+图外后处理（Agent._finalize_turn）：
    ├──► ShortTermMemory.add(user, question)
    ├──► ShortTermMemory.add(assistant, answer)
-   │
-   └──► MemoryExtractor.extract(question, answer)
-          └── 提取新事实
-                └── LongTermMemory.remember(user_id, fact)
+   └──► 超限时 → MediumTermMemory.update()（会话摘要）
 ```
 
 ## 3. 当前局限
 
-### 3.1 缺少中期记忆
+### 3.1 长期记忆存储后端
 
-理想的三层记忆架构应为：
-
-| 层级 | 作用 | 当前状态 |
-|---|---|---|
-| 短期记忆 | 当前最近几轮完整对话 | ✅ 已实现 |
-| 中期记忆 | 当前/近期会话摘要 | ❌ 缺失 |
-| 长期记忆 | 跨会话用户事实 | ✅ 已实现 |
-
-当前 `ShortTermMemory` 通过截断丢弃旧对话，没有摘要层，长会话中较早的上下文会完全丢失。
+当前使用 Chroma 向量库，HNSW 索引自动持久化。旧版 `LocalVectorStore`（SQLite + numpy）作为兼容方案保留。
 
 ### 3.2 事实提取基于规则
 
