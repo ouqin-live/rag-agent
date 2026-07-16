@@ -19,7 +19,7 @@ from rag_agent.agent import Agent, AgentConfig, ChatResponse
 from rag_agent.embedder import get_embedder
 from rag_agent.evaluation import Evaluator
 from rag_agent.guardrails import Guardrails, GuardrailsConfig
-from rag_agent.knowledge import FixedSizeChunker, KnowledgeBase, SemanticChunker
+from rag_agent.knowledge import FixedSizeChunker, KnowledgeBase, MarkdownStructureChunker, SemanticChunker
 from rag_agent.knowledge.reranker import EmbeddingReranker
 from rag_agent.llm import OpenAICompatibleClient
 from rag_agent.logging_config import configure_logging
@@ -46,12 +46,17 @@ def _register(num: int, name: str, description: str):
 # ── 公共 fixtures（在首次跑 case 时惰性初始化）───────────────
 
 _fixtures: dict = {}  # 缓存 embedder / kb / ltm / llm / evaluator / agent 等
+_rebuild_flag: bool = False  # --rebuild 标记
 
 
 def _get_fixtures():
     """惰性初始化全局组件，只初始化一次。"""
+    global _rebuild_flag
     if _fixtures:
         return _fixtures
+
+    rebuild = _rebuild_flag
+    _rebuild_flag = False  # 只生效一次
 
     tmpdir = Path(tempfile.gettempdir()) / "rag_agent_phase4_test"
     tmpdir.mkdir(parents=True, exist_ok=True)
@@ -59,21 +64,30 @@ def _get_fixtures():
     md_path = setup_test_docs(tmpdir)
 
     data_dir = Path("data/phase4")
-    if data_dir.exists():
+
+    # --rebuild：强制重建
+    if rebuild and data_dir.exists():
+        print("🔨 强制重建向量库...")
         shutil.rmtree(data_dir)
+
+    data_dir.mkdir(parents=True, exist_ok=True)
 
     embedder = get_embedder()
 
-    # 知识库（Chroma：HNSW 索引 + 自动持久化 + 语义分块）
+    # 知识库（Chroma：HNSW 索引 + 自动持久化 + 结构感知分块）
     kb = KnowledgeBase.from_chroma_store(
         store_path=data_dir / "kb",
-        chunker=SemanticChunker(embedder=embedder, similarity_threshold=0.3),
+        chunker=MarkdownStructureChunker(min_chunk_size=100, max_chunk_size=800),
         embedder=embedder,
     )
-    kb.add_document(str(md_path), metadata={"tag": "rag"})
-    print(f"📄 测试文档: {md_path}")
-    print(f"📚 知识库存储: {data_dir / 'kb'}")
-    print(f"知识库已加载: {len(kb)} chunks")
+    # 已有数据则复用，避免每次重建向量库
+    if len(kb) == 0:
+        kb.add_document(str(md_path), metadata={"tag": "rag"})
+        print(f"📄 测试文档: {md_path}")
+        print(f"📚 知识库存储: {data_dir / 'kb'}")
+        print(f"知识库已加载: {len(kb)} chunks")
+    else:
+        print(f"♻️  复用已有知识库: {len(kb)} chunks")
 
     # 启用 Embedding 重排序（复用已有 embedder，零额外下载）
     kb.reranker = EmbeddingReranker(embedder)
@@ -114,15 +128,9 @@ def _get_fixtures():
 
 
 def setup_test_docs(tmpdir: Path) -> Path:
+    fixture = Path("tests/fixtures/rag_guide.md")
     md_path = tmpdir / "rag_guide.md"
-    md_path.write_text(
-        "# RAG 指南\n\n"
-        "RAG（检索增强生成）将外部知识库与大型语言模型结合。\n"
-        "它通过检索相关文档片段，并将其作为上下文输入语言模型，从而减少幻觉。\n"
-        "RAGAS 框架中的 Faithfulness 指标用于衡量生成答案是否忠于检索上下文。\n"
-        "Answer Relevance 指标衡量答案与用户问题的相关程度。\n",
-        encoding="utf-8",
-    )
+    md_path.write_text(fixture.read_text(encoding="utf-8"), encoding="utf-8")
     return md_path
 
 
@@ -139,7 +147,7 @@ def print_response(label: str, resp: ChatResponse) -> None:
         print(f"  ⚡ 缓存命中 (原缓存问题: {resp.cached_query})")
     if resp.search_query:
         print(f"  检索query: {resp.search_query}")
-    print(f"  回答: {resp.answer[:100]}...")
+    print(f"  回答: {resp.answer}")
     if resp.long_term_facts:
         print("  召回长期记忆:")
         for fact in resp.long_term_facts:
@@ -295,6 +303,10 @@ def main():
         help="要跑的 case，逗号分隔（如 1,3,kb,memory）。默认跑全部。",
     )
     parser.add_argument(
+        "--rebuild", "-r", action="store_true",
+        help="强制删除旧数据，重建向量库",
+    )
+    parser.add_argument(
         "--list", "-l", action="store_true",
         help="列出所有可用的 case",
     )
@@ -303,6 +315,10 @@ def main():
     if args.list:
         _list_cases()
         return
+
+    # 传 rebuild 标记给 fixtures 初始化
+    global _rebuild_flag
+    _rebuild_flag = bool(args.rebuild)
 
     # 确定要跑的 case
     if args.cases:
